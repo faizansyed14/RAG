@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Env files with real secrets
+.env*
+!.env*.example
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Tree engine local storage (dev, outside Docker) and other local data
+backend/.rag-data/
+backend/.pageindex-data/
+
+# Local reference / corpus files (not for git)
+Reference/
+reference/
+
+# Build artifacts
+dist/
+build/
+*.log

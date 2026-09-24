@@ -1,0 +1,89 @@
+RAG dev stack — Docker commands
+================================
+All commands run from the repo root (C:\Users\FAIZAN\Desktop\RAG), where
+docker-compose.dev.yml lives. Project name is "rag", so volumes are named
+rag_pgdata, rag_qdrant-data, rag_minio-data, rag_rag-data.
+
+Services: backend (:8000) · frontend (:3000) · postgres (:5432) ·
+qdrant (:6333) · minio (:9000 api, :9001 console)
+
+
+START
+-----
+# Recommended: builds images, starts everything, waits for postgres,
+# runs alembic migrations. Same as scripts/dev-start.sh.
+bash scripts/dev-start.sh
+
+# Manual equivalent, no rebuild:
+docker compose -f docker-compose.dev.yml up -d
+
+# Manual equivalent, force rebuild (after changing requirements.txt,
+# package.json, or a Dockerfile):
+docker compose -f docker-compose.dev.yml up -d --build
+
+# Start one service only (e.g. just the databases):
+docker compose -f docker-compose.dev.yml up -d postgres qdrant minio
+
+# Run migrations manually (dev-start.sh already does this):
+docker compose -f docker-compose.dev.yml exec -T backend alembic upgrade head
+
+
+STATUS / LOGS
+-------------
+docker compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.dev.yml logs -f backend
+docker compose -f docker-compose.dev.yml logs -f frontend
+docker compose -f docker-compose.dev.yml logs -f --tail=200
+
+
+STOP
+----
+# Stop containers, keep volumes (data survives) and networks:
+docker compose -f docker-compose.dev.yml stop
+
+# Stop and remove containers + network, keep volumes (data survives):
+docker compose -f docker-compose.dev.yml down
+
+# Restart a single service without touching the others:
+docker compose -f docker-compose.dev.yml restart backend
+
+
+CLEAR VOLUMES (DESTRUCTIVE — deletes all data)
+-----------------------------------------------
+# Remove containers, network, AND all named volumes (Postgres rows,
+# Qdrant vectors, MinIO objects, and the tree engine's own indexed-tree
+# storage in rag-data). Every uploaded/indexed document is gone after this.
+docker compose -f docker-compose.dev.yml down -v
+
+# Same, but also removes the images so the next `up` rebuilds from scratch:
+docker compose -f docker-compose.dev.yml down -v --rmi local
+
+# Clear ONE volume instead of everything (stack must be stopped first):
+docker compose -f docker-compose.dev.yml down
+docker volume rm rag_pgdata          # Postgres (documents table, metadata)
+docker volume rm rag_qdrant-data     # Qdrant (diagram embeddings)
+docker volume rm rag_minio-data      # MinIO (original files + previews)
+docker volume rm rag_rag-data        # tree engine's indexed tree storage
+
+# List/inspect volumes for this project:
+docker volume ls | grep rag_
+docker volume inspect rag_pgdata
+
+
+FULL RESET (fresh stack, no cache)
+-----------------------------------
+docker compose -f docker-compose.dev.yml down -v --rmi local
+bash scripts/dev-start.sh
+
+
+SHELL ACCESS
+------------
+docker compose -f docker-compose.dev.yml exec backend bash
+docker compose -f docker-compose.dev.yml exec frontend sh
+docker compose -f docker-compose.dev.yml exec postgres psql -U rag -d rag_engine
+
+
+TESTS
+-----
+docker compose -f docker-compose.dev.yml exec -T backend pytest -q
+docker compose -f docker-compose.dev.yml exec -T frontend npx tsc --noEmit
