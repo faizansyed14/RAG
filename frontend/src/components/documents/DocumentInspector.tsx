@@ -14,6 +14,8 @@ interface Props {
   document: DocumentOut;
   onClose: () => void;
   onOpenPreview: (documentId: string) => void;
+  /** Read-only users: just the PDF preview -- no tabs, and none of the admin-only index data is requested. */
+  previewOnly?: boolean;
 }
 
 function TreeBlock({ nodes, depth = 0 }: { nodes: TreeNode[]; depth?: number }) {
@@ -53,16 +55,17 @@ function MetaRow({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-export function DocumentInspector({ document, onClose, onOpenPreview }: Props) {
+export function DocumentInspector({ document, onClose, onOpenPreview, previewOnly = false }: Props) {
   const reduced = useReducedMotion();
-  const [tab, setTab] = useState<Tab>("pages");
+  const [tab, setTab] = useState<Tab>(previewOnly ? "preview" : "pages");
   const [dump, setDump] = useState<DocumentRawDump | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!previewOnly);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [numPages, setNumPages] = useState(0);
 
   useEffect(() => {
+    if (previewOnly) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -79,7 +82,7 @@ export function DocumentInspector({ document, onClose, onOpenPreview }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [document.document_id]);
+  }, [document.document_id, previewOnly]);
 
   useEffect(() => {
     if (tab !== "preview") return;
@@ -108,7 +111,7 @@ export function DocumentInspector({ document, onClose, onOpenPreview }: Props) {
     { id: "pages", label: "Pages / chunks", count: dump?.index.pages?.length },
     { id: "nodes", label: "Node chunks", count: dump?.index.node_chunks?.length },
     { id: "tree", label: "Tree" },
-    { id: "diagrams", label: "Diagrams", count: dump?.diagrams?.length },
+    { id: "diagrams", label: "Scanned Pages", count: dump?.diagrams?.length },
     { id: "raw", label: "Storage" },
     { id: "preview", label: "PDF preview" },
     { id: "json", label: "Full JSON" },
@@ -137,14 +140,16 @@ export function DocumentInspector({ document, onClose, onOpenPreview }: Props) {
             </span>
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => onOpenPreview(document.document_id)}
-          className="hidden items-center gap-1.5 rounded-lg border border-border bg-surface-raised px-3 py-2 text-xs font-semibold text-foreground shadow-soft transition hover:border-foreground sm:inline-flex"
-        >
-          <ExternalLink className="h-3.5 w-3.5" />
-          Side preview
-        </button>
+        {!previewOnly && (
+          <button
+            type="button"
+            onClick={() => onOpenPreview(document.document_id)}
+            className="hidden items-center gap-1.5 rounded-lg border border-border bg-surface-raised px-3 py-2 text-xs font-semibold text-foreground shadow-soft transition hover:border-foreground sm:inline-flex"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            Side preview
+          </button>
+        )}
         <button
           type="button"
           onClick={onClose}
@@ -155,6 +160,7 @@ export function DocumentInspector({ document, onClose, onOpenPreview }: Props) {
         </button>
       </header>
 
+      {!previewOnly && (
       <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-border bg-surface px-3 py-2 sm:px-6">
         {tabs.map((t) => (
           <button
@@ -175,6 +181,7 @@ export function DocumentInspector({ document, onClose, onOpenPreview }: Props) {
           </button>
         ))}
       </div>
+      )}
 
       <div className="flex-1 overflow-y-auto bg-background px-4 py-5 sm:px-6 sm:py-6">
         {loading && (
@@ -212,7 +219,8 @@ export function DocumentInspector({ document, onClose, onOpenPreview }: Props) {
             )}
             <p className="mt-4 text-xs text-muted">
               Pages tab = full markdown chunks from pages.json. Node chunks = tree-node text. Tree =
-              hierarchy with embedded text. Diagrams = OCR/VLM rows in Postgres + Qdrant.
+              hierarchy with embedded text. Scanned Pages = OCR/VLM rows in Postgres + Qdrant (any
+              document without a real text layer -- not necessarily a technical drawing).
             </p>
           </div>
         )}
@@ -277,7 +285,7 @@ export function DocumentInspector({ document, onClose, onOpenPreview }: Props) {
         {!loading && dump && tab === "diagrams" && (
           <div className="mx-auto max-w-3xl space-y-4">
             {(!dump.diagrams || dump.diagrams.length === 0) && (
-              <p className="text-sm text-muted">No diagram pages for this document.</p>
+              <p className="text-sm text-muted">No scanned pages for this document.</p>
             )}
             {dump.diagrams?.map((d) => (
               <section key={d.qdrant_point_id} className="rounded-xl border border-border bg-surface-raised p-4 text-sm shadow-soft sm:p-5">

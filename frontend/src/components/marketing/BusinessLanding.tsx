@@ -65,7 +65,7 @@ export function BusinessLanding({ onSignIn }: Props) {
               transition={{ duration: 0.7, delay: 0.08, ease }}
               className="font-display text-balance mt-8 text-[clamp(3.6rem,8vw,8.4rem)] font-medium leading-[0.88] tracking-[-0.045em]"
             >
-              RAG answers, grounded in evidence.
+              RAG
             </motion.h1>
             <motion.p
               initial={reduced ? false : { opacity: 0, y: 18 }}

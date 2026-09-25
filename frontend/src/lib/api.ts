@@ -105,7 +105,7 @@ export async function fetchDocuments(options?: { folderId?: string | null; unfil
   return res.json();
 }
 
-export async function uploadDocument(file: File, folderId?: string | null): Promise<{ document_id: string }> {
+export async function uploadDocument(file: File, folderId?: string | null): Promise<{ document_id: string; status?: string }> {
   const form = new FormData();
   form.append("file", file);
   if (folderId) form.append("folder_id", folderId);

@@ -1791,6 +1791,8 @@ class RagEngineClient:
         offset: int = 0,
         folder_id: Optional[str] = None,
         recursive: bool = False,
+        query: Optional[str] = None,
+        doc_ids: Optional[Any] = None,
     ) -> dict[str, Any]:
         """
         List documents with pagination, newest first.
@@ -1802,6 +1804,12 @@ class RagEngineClient:
             recursive (bool): Include documents in ``folder_id``'s
                 descendant folders, flattened into one list. Cloud-only;
                 local libraries have no folders.
+            query (str, optional): Local-only keyword (full-text) ranking
+                over name/description/section titles — see
+                ``rag_core/postgres_store.py``. Lexical, not semantic.
+                Ignored/unsupported in cloud mode.
+            doc_ids (optional): Local-only — scope the search to these
+                document ids. Ignored/unsupported in cloud mode.
 
         Returns:
             dict: {'documents': [...], 'total', 'limit', 'offset'}.
@@ -1811,8 +1819,13 @@ class RagEngineClient:
         at the library root, for a folder reached only through a share
         of something below it, and for every local document.
         """
-        return self._api.list_documents(limit=limit, offset=offset,
-                                        folder_id=folder_id, recursive=recursive)
+        kwargs: dict[str, Any] = {"limit": limit, "offset": offset,
+                                  "folder_id": folder_id, "recursive": recursive}
+        if query is not None:
+            kwargs["query"] = query
+        if doc_ids is not None:
+            kwargs["doc_ids"] = doc_ids
+        return self._api.list_documents(**kwargs)
 
     # ---------- AGENT INTEGRATION ----------
 

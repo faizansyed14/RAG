@@ -39,6 +39,9 @@ const securityHeaders = [
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // Hide the Next.js DevTools “N” badge in development.
+  // Real compile/runtime errors still surface — fix those, or run `next start` after build.
+  devIndicators: false,
   // Pin the workspace root so a stray lockfile in a parent directory can't change resolution.
   turbopack: { root: path.join(__dirname) },
   async headers() {

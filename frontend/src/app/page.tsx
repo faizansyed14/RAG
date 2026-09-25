@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   FileText,
-  FolderOpen,
   LogOut,
   Menu,
   MessageSquare,
@@ -35,13 +34,12 @@ import { LoginForm } from "@/components/auth/LoginForm";
 import { BusinessLanding } from "@/components/marketing/BusinessLanding";
 import { ChatWindow } from "@/components/chat/ChatWindow";
 import { ChatsHome } from "@/components/chat/ChatsHome";
-import { RagFilesView } from "@/components/chat/RagFilesView";
 import type { QuotaState } from "@/components/chat/CreditsMeter";
 import { DocumentsView } from "@/components/documents/DocumentsView";
 import { Logo } from "@/components/Logo";
 import { PreviewPane, citationToTarget, diagramToTarget, type PreviewTarget } from "@/components/preview/PreviewPane";
 
-type View = "chats" | "chat" | "rag-files" | "documents" | "users";
+type View = "chats" | "chat" | "documents" | "users";
 
 export default function Home() {
   const [authed, setAuthed] = useState<boolean | null>(null);
@@ -380,36 +378,19 @@ export default function Home() {
             type="button"
             onClick={() => {
               flushPendingSave();
-              setView("rag-files");
+              setView("documents");
+              selectAllDocuments();
               closeSidebarOnMobile();
             }}
             className={clsx(
               "flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition",
-              view === "rag-files" ? "bg-sidebar-active text-sidebar-fg" : "text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-fg",
+              view === "documents" ? "bg-sidebar-active text-sidebar-fg" : "text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-fg",
             )}
           >
-            <FolderOpen className="h-4 w-4" strokeWidth={1.75} />
-            Rag files
+            <FileText className="h-4 w-4" strokeWidth={1.75} />
+            Documents
+            <span className="ml-auto text-xs text-sidebar-muted">{documents.length}</span>
           </button>
-          {isAdmin && (
-            <button
-              type="button"
-              onClick={() => {
-                flushPendingSave();
-                setView("documents");
-                selectAllDocuments();
-                closeSidebarOnMobile();
-              }}
-              className={clsx(
-                "flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition",
-                view === "documents" ? "bg-sidebar-active text-sidebar-fg" : "text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-fg",
-              )}
-            >
-              <FileText className="h-4 w-4" strokeWidth={1.75} />
-              Documents
-              <span className="ml-auto text-xs text-sidebar-muted">{documents.length}</span>
-            </button>
-          )}
           {isAdmin && (
             <button
               type="button"
@@ -521,22 +502,20 @@ export default function Home() {
                 ? "Chats"
                 : view === "chat"
                   ? activeSession?.title ?? "New chat"
-                  : view === "rag-files"
-                    ? "Rag files"
-                    : view === "users"
-                      ? "Users"
-                      : "Document library"}
+                  : view === "users"
+                    ? "Users"
+                    : "Document library"}
             </div>
             <div className="mt-0.5 hidden text-[10px] text-muted sm:block">
               {view === "chats"
                 ? "Start or continue a conversation"
                 : view === "chat"
                   ? "Evidence-backed workspace"
-                  : view === "rag-files"
-                    ? "Raw documents used by RAG"
-                    : view === "users"
-                      ? "Accounts and usage limits"
-                      : "Manage sources and indexing"}
+                  : view === "users"
+                    ? "Accounts and usage limits"
+                    : isAdmin
+                      ? "Manage sources and indexing"
+                      : "Browse indexed sources"}
             </div>
           </div>
           <div className="ml-auto flex items-center gap-1">
@@ -562,7 +541,7 @@ export default function Home() {
           {isAdmin && view === "users" && (
             <UsersView currentUserId={me.user_id} onUnauthorized={signOut} onSelfPasswordChanged={signOut} />
           )}
-          {isAdmin && view === "documents" && (
+          {view === "documents" && (
             <DocumentsView
               documents={documents}
               folders={folders}
@@ -577,6 +556,7 @@ export default function Home() {
               onSelectAll={selectAllDocuments}
               onDeleteFolder={handleDeleteFolder}
               onChatWithFolders={startChatWithFolders}
+              readOnly={!isAdmin}
             />
           )}
           {view === "chats" && (
@@ -587,7 +567,6 @@ export default function Home() {
               onDelete={removeSession}
             />
           )}
-          {view === "rag-files" && <RagFilesView />}
           {view === "chat" && activeSession && (
             <ChatWindow
               key={activeSession.id}

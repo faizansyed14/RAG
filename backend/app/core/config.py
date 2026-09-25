@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     trusted_proxy_hops: int = 0
     access_token_ttl_minutes: int = 60 * 24
     max_upload_mb: int = 50
+    # Bulk ingestion: how many documents are indexed at once -- 1 = strictly one after another (each one already fans out
+    # into many parallel model calls), and whether documents left half-done by a restart
+    # are resumed automatically on boot.
+    ingest_concurrency: int = 1
+    recover_stuck_ingests: bool = True
     presigned_url_ttl_seconds: int = 600
 
     # --- Rate limits (see core/ratelimit.py). limit / window in seconds. ---
@@ -39,7 +44,6 @@ class Settings(BaseSettings):
     rl_login_ip_max_failures: int = 15   # failed logins per IP before a lockout
     rl_login_lockout_seconds: int = 900
     rl_chat_per_minute: int = 6          # chat requests per user per minute (on top of credits)
-    rl_upload_per_hour: int = 20
     rl_admin_write_per_minute: int = 60
     rl_me_per_minute: int = 60
     rl_global_per_minute: int = 300      # coarse per-IP backstop, in-process

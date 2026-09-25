@@ -407,13 +407,16 @@ async def test_upload_endpoint_rejects_fake_pdf_and_oversize(make_user, monkeypa
         assert big.status_code == 413
 
 
-async def test_upload_rate_limit(make_user, monkeypatch):
+async def test_bulk_uploads_are_not_rate_limited(make_user):
+    """A big batch must never be throttled by a per-hour cap (the files here are invalid on
+    purpose -- 400 is the validator answering, not a 429)."""
     _, headers, _ = await make_user(role="admin")
-    monkeypatch.setattr(get_settings(), "rl_upload_per_hour", 2)
     async with _client(headers) as client:
-        for _ in range(2):
-            assert (await client.post("/api/documents", files={"file": ("a.pdf", b"nope", "application/pdf")})).status_code == 400
-        assert (await client.post("/api/documents", files={"file": ("a.pdf", b"nope", "application/pdf")})).status_code == 429
+        codes = [
+            (await client.post("/api/documents", files={"file": (f"a{i}.pdf", b"nope", "application/pdf")})).status_code
+            for i in range(30)
+        ]
+    assert set(codes) == {400}
 
 
 # --------------------------------------------------------------------------- hardening
@@ -480,3 +483,119 @@ async def test_regular_users_cannot_upload_or_delete_documents(make_user):
         assert upload.status_code == 403
         assert (await client.delete(f"/api/documents/{uuid.uuid4()}")).status_code == 403
         assert (await client.post("/api/folders", json={"name": "x"})).status_code == 403
+
+
+
+# --------------------------------------------------------------------------- bulk ingestion
+
+
+async def _make_doc(status: str, name: str) -> uuid.UUID:
+    document_id = uuid.uuid4()
+    async with async_session() as session:
+        session.add(Document(
+            document_id=document_id, filename=name, doc_type="txt",
+            content_hash=hashlib.sha256(str(document_id).encode()).hexdigest(),
+            storage_key=f"originals/{document_id}/{name}", status=status, error="boom" if status == "failed" else None,
+        ))
+        await session.commit()
+    return document_id
+
+
+async def _delete_docs(ids):
+    async with async_session() as session:
+        for document_id in ids:
+            doc = await session.get(Document, document_id)
+            if doc is not None:
+                await session.delete(doc)
+        await session.commit()
+
+
+async def _status(document_id) -> str:
+    async with async_session() as session:
+        return (await session.get(Document, document_id)).status
+
+
+async def test_restart_resumes_unfinished_documents_only(monkeypatch):
+    from app.ingestion import router
+
+    stuck = [await _make_doc(s, f"stuck-{s}.txt") for s in ("queued", "extracting", "ocr", "indexing")]
+    done = [await _make_doc("indexed", "done.txt"), await _make_doc("failed", "failed.txt")]
+    started: list[uuid.UUID] = []
+
+    async def fake_ingest(document_id, storage_key, doc_type):
+        started.append(document_id)
+
+    monkeypatch.setattr(router, "ingest_document", fake_ingest)
+    try:
+        assert await router.recover_unfinished_ingests(only={*stuck, *done}) == 4
+        await asyncio.gather(*list(router._recovery_tasks))
+        assert set(started) == set(stuck)
+        assert {await _status(d) for d in stuck} == {"queued"}
+        assert await _status(done[0]) == "indexed" and await _status(done[1]) == "failed"
+    finally:
+        await _delete_docs(stuck + done)
+
+
+async def test_ingest_concurrency_is_bounded(monkeypatch):
+    from app.ingestion import router
+
+    monkeypatch.setattr(get_settings(), "ingest_concurrency", 2)
+    router._gates.clear()
+    running = peak = 0
+
+    async def fake_inner(document_id, storage_key, doc_type):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.05)
+        running -= 1
+
+    monkeypatch.setattr(router, "_ingest_document_inner", fake_inner)
+    await asyncio.gather(*[router.ingest_document(uuid.uuid4(), "k", "txt") for _ in range(8)])
+    assert peak == 2
+    router._gates.clear()
+
+
+async def test_reuploading_a_failed_file_retries_it(make_user, monkeypatch):
+    _, headers, _ = await make_user(role="admin")
+    content = b"%PDF-1.4 retry me " + uuid.uuid4().hex.encode()
+    document_id = uuid.uuid4()
+    async with async_session() as session:
+        session.add(Document(
+            document_id=document_id, filename="retry.pdf", doc_type="pdf",
+            content_hash=hashlib.sha256(content).hexdigest(), storage_key=f"originals/{document_id}/retry.pdf",
+            status="failed", error="boom",
+        ))
+        await session.commit()
+
+    retried: list[uuid.UUID] = []
+
+    async def fake_ingest(doc_id, storage_key, doc_type):
+        retried.append(doc_id)
+
+    from app.ingestion import router
+
+    monkeypatch.setattr(router, "ingest_document", fake_ingest)
+    try:
+        async with _client(headers) as client:
+            resp = await client.post("/api/documents", files={"file": ("retry.pdf", content, "application/pdf")})
+        assert resp.status_code == 200 and resp.json()["document_id"] == str(document_id)
+        assert resp.json()["status"] == "queued"
+        await asyncio.gather(*list(router._recovery_tasks))
+        assert retried == [document_id]
+        assert await _status(document_id) == "queued"
+    finally:
+        await _delete_docs([document_id])
+
+
+def test_many_identically_named_files_can_be_indexed():
+    from app.rag_core.local_api import LocalAPI
+
+    api = object.__new__(LocalAPI)
+
+    class FakeStore:
+        def list_metas(self):
+            return [{"name": "Invoice.pdf"}] + [{"name": f"Invoice_{n}.pdf"} for n in range(1, 300)]
+
+    api._store = FakeStore()
+    assert api._unique_doc_name("Invoice.pdf") == "Invoice_300.pdf"

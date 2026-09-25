@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .errors import RagEngineError
-from .local_store import DocStore
+from .postgres_store import PostgresDocStore
 from .naming import sanitize_filename, truncate_filename
 from .utils import run_off_loop
 
@@ -24,6 +24,23 @@ def _scrub_surrogates(text: str) -> str:
     """Lone surrogates (surrogateescape'd names, PyPDF2's surrogatepass
     decodes) cannot encode to UTF-8; replace with U+FFFD."""
     return _SURROGATES.sub("\ufffd", text)
+
+
+def _shape_doc(m: dict) -> dict:
+    """The public list_documents() shape for one meta dict -- shared by the plain
+    time-sort listing and the search_metas() relevance path."""
+    return {
+        "id": m.get("id"),
+        "name": m.get("name"),
+        "description": m.get("description"),
+        "status": m.get("status"),
+        "createdAt": m.get("createdAt"),
+        "pageNum": m.get("pageNum", 0),
+        "folderId": None,
+        "path": None,
+        "metadata": m.get("metadata"),
+        "features": {},
+    }
 
 
 def _now_iso() -> str:
@@ -39,7 +56,11 @@ class LocalAPI:
 
     def __init__(self, storage_path: str, model: str, summary_model: str,
                  index_backend: dict | None = None):
-        self._store = DocStore(storage_path)
+        # storage_path is unused here -- kept only because client.py (vendored, not modified)
+        # still passes it. Document trees now live in Postgres (document_trees table); see
+        # postgres_store.py's module docstring for why. local_store.py's file-based DocStore
+        # is left in place, unused, so this swap is a one-line revert if ever needed.
+        self._store = PostgresDocStore()
         self._model = model
         self._summary_model = summary_model
         self._index_backend = index_backend
@@ -160,12 +181,12 @@ class LocalAPI:
         return {"doc_id": doc_id, "name": meta["name"]}
 
     def _unique_doc_name(self, name: str) -> str:
-        """Mirror the cloud upload: a taken name gets _1.._99 appended,
-        beyond that the submit is rejected."""
+        """A taken name gets _1.._N appended (N raised from the cloud's 99 so a big
+        batch of identically named files, e.g. many `Invoice.pdf`, can all be indexed)."""
         taken = {meta.get("name") for meta in self._store.list_metas()}
         if name not in taken:
             return name
-        for num in range(1, 100):
+        for num in range(1, 10000):
             candidate = truncate_filename(name, suffix=f"_{num}")
             if candidate not in taken:
                 return candidate
@@ -345,6 +366,8 @@ class LocalAPI:
         folder_id: str | None = None,
         name: str | None = None,
         recursive: bool = False,
+        query: str | None = None,
+        doc_ids=None,
     ) -> dict[str, Any]:
         if limit < 1 or limit > 10000:
             raise ValueError("limit must be between 1 and 10000")
@@ -354,22 +377,15 @@ class LocalAPI:
             raise RagEngineError(
                 "Failed to list documents: folders are not supported in local mode."
             )
+        if query is not None and query.strip():
+            metas, total = self._store.search_metas(query.strip(), limit, offset, doc_ids=doc_ids)
+            return {"documents": [_shape_doc(m) for m in metas],
+                    "total": total, "limit": limit, "offset": offset}
         metas = sorted(self._store.list_metas(), key=lambda m: m.get("id") or "")
         metas.sort(key=lambda m: m.get("createdAt") or "", reverse=True)
         if name is not None:
             metas = [m for m in metas if m.get("name") == name]
-        documents = [{
-            "id": m.get("id"),
-            "name": m.get("name"),
-            "description": m.get("description"),
-            "status": m.get("status"),
-            "createdAt": m.get("createdAt"),
-            "pageNum": m.get("pageNum", 0),
-            "folderId": None,
-            "path": None,
-            "metadata": m.get("metadata"),
-            "features": {},
-        } for m in metas[offset:offset + limit]]
+        documents = [_shape_doc(m) for m in metas[offset:offset + limit]]
         return {
             "documents": documents,
             "total": len(metas),

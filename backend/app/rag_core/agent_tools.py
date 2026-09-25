@@ -735,16 +735,13 @@ def _browse_documents(client, folder_id: str = "root", recursive: bool = False,
                          "Semantic ranking is available in cloud mode (RagEngineCloudClient with an API key)"]},
             "INVALID_INPUT",
         )
-    if sort == "relevance" or query:
-        # Semantic ranking is a cloud capability; like folders, it is not
-        # imitated here.
+    has_query = bool(query and query.strip())
+    if sort == "relevance" and not has_query:
         return _failure(
-            "Relevance ranking is not supported in local mode yet — use "
-            "the default time sort.", None,
-            {"summary": "This local library does not have semantic ranking yet",
-             "options": ["Retry without sort/query and match the returned names and descriptions against the intent yourself",
-                         "Page through the full library with `offset: next_offset`",
-                         "Semantic ranking is available in cloud mode (RagEngineCloudClient with an API key)"]},
+            'sort="relevance" requires a non-empty `query`.', None,
+            {"summary": "Missing query for relevance sort",
+             "options": ['Pass a `query` string together with sort="relevance"',
+                         'Or omit both to use the default "time" sort']},
             "INVALID_INPUT",
         )
     try:
@@ -756,7 +753,15 @@ def _browse_documents(client, folder_id: str = "root", recursive: bool = False,
                          "options": ["Pass integer offset and limit values"]},
                         "INVALID_INPUT")
 
-    if _allowed_ids is None:
+    # A query ranks by keyword match (Postgres full-text over name/description/
+    # section titles) regardless of the exact `sort` value passed — this is a
+    # lexical ranking, not semantic/embedding search; the response says so below.
+    if has_query:
+        listing = client.list_documents(limit=limit, offset=offset, query=query,
+                                        doc_ids=_allowed_ids)
+        window = listing.get("documents") or []
+        total = listing.get("total")
+    elif _allowed_ids is None:
         listing = client.list_documents(limit=limit, offset=offset)
         window = listing.get("documents") or []
         total = listing.get("total")
@@ -791,7 +796,7 @@ def _browse_documents(client, folder_id: str = "root", recursive: bool = False,
 
     data: dict[str, Any] = {
         "documents": items,
-        "sort": sort,
+        "sort": "relevance" if has_query else sort,
         "next_offset": next_offset,
         "has_more": has_more,
     }
@@ -799,26 +804,48 @@ def _browse_documents(client, folder_id: str = "root", recursive: bool = False,
         data["folders"] = []
 
     if not items and offset == 0:
-        next_steps = {
-            "summary": "Nothing to show",
-            "options": ["Nothing here. Index documents with "
-                        "RagEngineClient.submit_document() to get started."],
-            "auto_retry": "Index a document with "
-                          "RagEngineClient.submit_document() to get started",
-        }
+        if has_query:
+            next_steps = {
+                "summary": "No keyword matches for this query",
+                "options": [
+                    "This is a lexical (keyword) match, not semantic search — a "
+                    "document phrased very differently from the query can be "
+                    "missed even though it exists.",
+                    "Retry with different/broader keywords",
+                    'Or call browse_documents() with sort="time" (no query) to '
+                    "page through the full library instead",
+                ],
+            }
+        else:
+            next_steps = {
+                "summary": "Nothing to show",
+                "options": ["Nothing here. Index documents with "
+                            "RagEngineClient.submit_document() to get started."],
+                "auto_retry": "Index a document with "
+                              "RagEngineClient.submit_document() to get started",
+            }
         return _success(data, next_steps)
 
     options = []
     if items:
         options.append("Use get_document() with a document name to view details")
-        options.append(
-            "Results returned ≠ correct results. Verify these documents match "
-            "the user's actual intent (topic, time period, document type) "
-            "before proceeding."
-            + (" If they do not match, page through the rest of the library."
-               if has_more else "")
-            + " Do NOT use general knowledge as a substitute."
-        )
+        if has_query:
+            options.append(
+                "Ranked by keyword match (lexical full-text search over name, "
+                "description, and section titles) — not semantic/meaning-based. "
+                "Verify these documents match the user's actual intent before "
+                "proceeding; a real match phrased differently from the query "
+                "may not appear here. Do NOT use general knowledge as a substitute."
+            )
+        else:
+            options.append(
+                "Results returned ≠ correct results. Verify these documents match "
+                "the user's actual intent (topic, time period, document type) "
+                "before proceeding."
+                + (" If they do not match, page through the rest of the library."
+                   if has_more else "")
+                + " Do NOT use general knowledge as a substitute."
+            )
     if page_has_processing:
         options.append("Some documents on this page are still processing. "
                        "Use get_document() to check individual status.")

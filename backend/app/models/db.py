@@ -8,8 +8,8 @@ the two.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Text, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Text, text
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -20,8 +20,17 @@ class Base(DeclarativeBase):
     pass
 
 
+_DOC_TYPES = ("pdf", "docx", "csv", "xlsx", "eml", "txt", "json", "xer")
+_DOC_STATUSES = ("queued", "extracting", "ocr", "indexing", "indexed", "failed")
+
+
 class Document(Base):
     __tablename__ = "documents"
+    __table_args__ = (
+        CheckConstraint(f"doc_type IN {_DOC_TYPES!r}", name="documents_doc_type_check"),
+        CheckConstraint(f"status IN {_DOC_STATUSES!r}", name="documents_status_check"),
+        Index("documents_created_at_idx", text("created_at DESC")),
+    )
 
     document_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
@@ -45,7 +54,7 @@ class Document(Base):
     status_detail: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
 
-    created_at: Mapped[datetime | None] = mapped_column(server_default=text("now()"))
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
 
 class DiagramPage(Base):
@@ -55,7 +64,9 @@ class DiagramPage(Base):
     __tablename__ = "diagram_pages"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.document_id"))
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.document_id", ondelete="CASCADE")
+    )
     page_number: Mapped[int] = mapped_column(nullable=False)
 
     ocr_text: Mapped[str | None] = mapped_column(Text)
@@ -76,7 +87,7 @@ class Folder(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime | None] = mapped_column(server_default=text("now()"))
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
 
 class DocumentFolder(Base):
@@ -104,7 +115,10 @@ class User(Base):
     is bumped on password/role/active changes so existing JWTs stop working."""
 
     __tablename__ = "users"
-    __table_args__ = (Index("users_username_lower_idx", text("lower(username)"), unique=True),)
+    __table_args__ = (
+        Index("users_username_lower_idx", text("lower(username)"), unique=True),
+        CheckConstraint("role IN ('admin', 'user')", name="users_role_check"),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
@@ -127,6 +141,7 @@ class UsageEvent(Base):
     """Audit trail of credit charges/refunds, one row per chat message."""
 
     __tablename__ = "usage_events"
+    __table_args__ = (CheckConstraint("outcome IN ('charged', 'refunded')", name="usage_events_outcome_check"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -135,6 +150,27 @@ class UsageEvent(Base):
     cost: Mapped[int] = mapped_column(nullable=False)
     outcome: Mapped[str] = mapped_column(Text, nullable=False)  # charged | refunded
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+
+
+class DocumentTree(Base):
+    """The tree engine's own knowledge structure for one document -- what used to be
+    doc.json/tree.json/pages.json on the .rag-data volume (see rag_core/postgres_store.py).
+    Keyed by the tree engine's own id ("pi-<hash>"), not documents.document_id: the two
+    schemas are intentionally decoupled, same as the file-based store never knew about our
+    Postgres rows either. Cleanup is explicit-order from api/documents.py::delete_document,
+    not a foreign key."""
+
+    __tablename__ = "document_trees"
+
+    doc_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    meta: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    tree: Mapped[list] = mapped_column(JSONB, nullable=False)
+    pages: Mapped[list] = mapped_column(JSONB, nullable=False)
+    # Trigger-maintained (see alembic/versions/0008_document_trees_search.py) -- never written
+    # from Python, only declared here for schema introspection.
+    search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
 
 class RateLimit(Base):
@@ -153,7 +189,9 @@ def _asyncpg_url(dsn: str) -> str:
     return dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 
-_engine = create_async_engine(_asyncpg_url(get_settings().postgres_dsn), pool_pre_ping=True)
+_engine = create_async_engine(
+    _asyncpg_url(get_settings().postgres_dsn), pool_pre_ping=True, pool_size=10, max_overflow=20
+)
 async_session = async_sessionmaker(_engine, expire_on_commit=False)
 
 

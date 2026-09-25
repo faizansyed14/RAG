@@ -29,6 +29,7 @@ python-dotenv>=1.0
 sqlalchemy>=2.0
 asyncpg>=0.29
 alembic>=1.13
+psycopg2-binary>=2.9      # sync driver -- rag_core/postgres_store.py runs off the event loop
 
 # Vector DB for diagram embeddings
 qdrant-client>=1.11

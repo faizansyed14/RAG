@@ -17,6 +17,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.middleware import SecurityMiddleware
 from app.core.object_store import get_object_store
+from app.ingestion.router import recover_unfinished_ingests
 from app.core.ratelimit import purge_old
 
 configure_logging()
@@ -44,6 +45,11 @@ async def lifespan(_app: FastAPI):
     # nothing else creates the bucket before it's needed.
     await asyncio.to_thread(get_object_store().ensure_bucket)
     await ensure_bootstrap_admin()
+    if settings.recover_stuck_ingests:
+        try:
+            await recover_unfinished_ingests()
+        except Exception:
+            log.exception("could not resume unfinished ingestions")
     purge_task = asyncio.create_task(_purge_loop())
     try:
         yield

@@ -6,8 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements-dev.txt ./
-RUN pip install --no-cache-dir -r requirements-dev.txt
+# Constrained against requirements.lock (see Dockerfile, the prod image) so a
+# fresh --build resolves the same versions as the tested image instead of
+# floating to whatever's newest on PyPI -- that drift is what broke this
+# build (a newer SQLAlchemy stopped auto-installing greenlet).
+COPY requirements.txt requirements-dev.txt requirements.lock ./
+RUN pip install --no-cache-dir -r requirements-dev.txt -c requirements.lock
 
 COPY . .
 

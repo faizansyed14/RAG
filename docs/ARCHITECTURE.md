@@ -34,7 +34,7 @@ The most important architectural fact is:
 
 > **Ordinary document text is not embedded into Qdrant. Qdrant currently stores one vector per scanned/visual PDF page only.** Text answers are produced by an agent that navigates a document tree and reads selected pages.
 
-The browser talks to a FastAPI backend. FastAPI stores metadata in Postgres, files and rendered previews in MinIO/S3, visual-page vectors in Qdrant, and PageIndex tree/page artifacts in the persistent `rag-data` volume. The chat agent is built with the OpenAI Agents SDK, but its configured model is routed through LiteLLM and OpenRouter. Direct vision and embedding requests use the OpenAI Python client pointed at OpenRouter's OpenAI-compatible endpoint.
+The browser talks to a FastAPI backend. FastAPI stores metadata in Postgres, files and rendered previews in MinIO/S3, visual-page vectors in Qdrant, and PageIndex tree/page artifacts in a Postgres table (`document_trees`). The chat agent is built with the OpenAI Agents SDK, but its configured model is routed through LiteLLM and OpenRouter. Direct vision and embedding requests use the OpenAI Python client pointed at OpenRouter's OpenAI-compatible endpoint.
 
 ## 2. A 90-second explanation for teammates
 
@@ -42,7 +42,7 @@ Use this summary in a meeting:
 
 > A user uploads a supported document to FastAPI. We hash it for deduplication, store the original in MinIO/S3, create a Postgres record, and start ingestion in a FastAPI background task. The local PageIndex engine only accepts text-readable PDFs, so non-PDF files are parsed into semantic blocks and rendered as PDF first. A normal PDF goes straight to PageIndex. A scanned PDF is rasterized page by page, sent to a vision model for OCR and descriptions, and rebuilt as a text PDF before PageIndex sees it.
 >
-> PageIndex builds a hierarchy of headings and page ranges, adds LLM summaries and a document description, and stores the tree plus full page text on disk. This is the main text-retrieval index; it is not a vector index. For scanned pages, we additionally embed the vision caption, description, and OCR text, then store one cosine vector per page in Qdrant.
+> PageIndex builds a hierarchy of headings and page ranges, adds LLM summaries and a document description, and stores the tree plus full page text as a row in Postgres (`document_trees`). This is the main text-retrieval index; it is not a vector index. For scanned pages, we additionally embed the vision caption, description, and OCR text, then store one cosine vector per page in Qdrant.
 >
 > During chat, the frontend sends the question, selected document IDs, and prior visible messages. The backend starts one PageIndex agent over the allowed documents. The OpenAI Agents SDK sends the model its instructions and four read-only tools. The model can browse documents, inspect structure, read targeted pages, and repeat until it has enough evidence. Answer tokens and tool activity stream to the browser over SSE. The model writes citation tags, the backend resolves them to document/page records, and clicking a citation opens a presigned PDF preview at that page. If the query sounds visual, a parallel path embeds the question, searches Qdrant, and asks the vision model to verify each candidate page before showing it.
 
@@ -53,9 +53,8 @@ flowchart LR
     U[Browser user]
     FE[Next.js 14 frontend\nReact + TypeScript + Tailwind]
     API[FastAPI backend\nAuth + REST + SSE]
-    PG[(Postgres 16\nmetadata and relationships)]
+    PG[(Postgres 16\nmetadata, relationships,\nPageIndex tree/page JSON)]
     OBJ[(MinIO / S3\noriginals, previews, page PNGs)]
-    TREE[(rag-data volume\nPageIndex tree and page JSON)]
     QD[(Qdrant\ndiagram-page vectors)]
     OR[OpenRouter\nOpenAI-compatible gateway]
     AG[OpenAI Agents SDK\nPageIndex agent loop]
@@ -66,7 +65,7 @@ flowchart LR
     API <--> PG
     API <--> OBJ
     API <--> PI
-    PI <--> TREE
+    PI <--> PG
     API <--> QD
     API -->|vision and embeddings via AsyncOpenAI| OR
     PI -->|index summaries via LiteLLM| OR
@@ -80,7 +79,7 @@ flowchart LR
 | Service | Technology | Host port | Persistent data |
 |---|---|---:|---|
 | `frontend` | Node 20, Next.js dev server | `3000` | Browser `localStorage`; source bind mount in dev |
-| `backend` | Python 3.12, Uvicorn, FastAPI | `8000` | `rag-data` mounted at `/app/.rag-data` |
+| `backend` | Python 3.12, Uvicorn, FastAPI | `8000` | Stateless; tree/page JSON lives in Postgres (`document_trees`) |
 | `postgres` | Postgres 16 | `5432` | `pgdata` |
 | `qdrant` | Qdrant | `6333` | `qdrant-data` |
 | `minio` | MinIO, S3-compatible object storage | `9000`; console `9001` | `minio-data` |
@@ -185,7 +184,7 @@ The `openai` client calls are SDK method calls against the configured OpenRouter
 | Identifier | Example/shape | Owner | Meaning |
 |---|---|---|---|
 | `document_id` | Postgres UUID | Application | Main public document ID used by REST and frontend |
-| `rag_doc_id` | `pi-<32 hex chars>` | PageIndex local engine | Pointer to the tree/page directory on `rag-data` |
+| `rag_doc_id` | `pi-<32 hex chars>` | PageIndex local engine | Pointer to the tree/page row in `document_trees` |
 | `qdrant_point_id` | UUID | Diagram pipeline | Vector point for one scanned PDF page |
 | `folder_id` | Postgres UUID | Application | A flat folder/label ID |
 | Object key | `originals/...`, `previews/...`, `diagrams/...` | MinIO/S3 | Location of a stored binary |
@@ -197,9 +196,9 @@ Do not interchange `document_id` and `rag_doc_id`. The former is used for Postgr
 
 | Store | Holds | Does not hold |
 |---|---|---|
-| Postgres | Document metadata/status/hash; `rag_doc_id`; diagram OCR/caption/description; Qdrant point pointer; flat folders and memberships | Full document text, tree JSON, vector values, binary files, chat history |
+| Postgres (application tables) | Document metadata/status/hash; `rag_doc_id`; diagram OCR/caption/description; Qdrant point pointer; flat folders and memberships | Vector values, binary files, chat history |
+| Postgres (`document_trees` table) | PageIndex `doc.json`/`tree.json`/`pages.json` equivalent, one row per document keyed by `rag_doc_id` | Original binary, diagram vectors |
 | MinIO/S3 | Original upload; rendered non-PDF preview; scanned-page PNGs | Search tree, relational metadata, chat sessions |
-| `rag-data` volume | `doc.json`, `tree.json`, `pages.json`, and library `manifest.json` | Original binary, Postgres records, diagram vectors |
 | Qdrant | One vector and payload per scanned/visual page | Ordinary text-page or tree-node embeddings |
 | Browser `localStorage` | Auth token, up to 50 chat sessions, selected document IDs, theme, preview width | Server-authoritative documents or indexes |
 
@@ -209,6 +208,7 @@ Do not interchange `document_id` and `rag_doc_id`. The former is used for Postgr
 - `diagram_pages`: one row per page of a scanned/drawing-heavy PDF, including OCR and the Qdrant point ID.
 - `folders`: flat named groups. There is no parent/child folder hierarchy.
 - `document_folders`: many-to-many join table. Folders behave like labels: a document can belong to zero, one, or many folders.
+- `document_trees`: one row per document, keyed by `rag_doc_id` (not `document_id`). Holds the PageIndex engine's own `meta`/`tree`/`pages` JSON (see §11.4). Written and read only through `rag_core/postgres_store.py`'s `PostgresDocStore`, never joined against directly by application queries.
 
 ## 7. Upload-to-index flow
 
@@ -223,7 +223,6 @@ sequenceDiagram
     participant ING as Background ingestion
     participant VIS as Vision/embedding APIs
     participant PI as PageIndex local engine
-    participant FS as rag-data
     participant Q as Qdrant
 
     B->>API: POST /api/documents (multipart file, optional folder_id)
@@ -253,7 +252,7 @@ sequenceDiagram
             ING->>PI: Submit rendered PDF in flash mode
         end
         PI->>VIS: Index-model calls for expansion/summaries/description
-        PI->>FS: Save doc.json, tree.json, pages.json, manifest.json
+        PI->>PG: Upsert document_trees row (meta, tree, pages)
         ING->>PG: Save rag_doc_id; status=indexed
         ING-->>B: SSE terminal event with tree
     end
@@ -370,13 +369,13 @@ OCR text contributes to the vector but is stored in Postgres rather than copied 
 | Unit | Created when | Stored where | Embedded? | Used for |
 |---|---|---|---|---|
 | Source block | Parsing non-PDF formats | Temporary Python list | No | PDF rendering (`heading`, `paragraph`, `table`, `code`) |
-| Page chunk | PDF text extraction | `pages.json` as `{page_index, markdown}` | No | `get_page_content` and citations |
-| Tree node | PageIndex hierarchy over page ranges | `tree.json` | No | Agent routing via titles and summaries |
+| Page chunk | PDF text extraction | `document_trees.pages` (jsonb) as `{page_index, markdown}` | No | `get_page_content` and citations |
+| Tree node | PageIndex hierarchy over page ranges | `document_trees.tree` (jsonb) | No | Agent routing via titles and summaries |
 | Diagram page | Scanned PDF vision processing | Postgres + object storage + Qdrant | Yes, one text vector per page | Visual semantic search and verification |
 
 ### 10.1 Page chunks
 
-After tree construction, the local API extracts every PDF page with PyPDF2 and saves the full text in `pages.json`. These are page-aligned chunks, not token-window chunks. A page can be very short or very long.
+After tree construction, the local API extracts every PDF page with PyPDF2 and saves the full text as the `pages` column of that document's `document_trees` row. These are page-aligned chunks, not token-window chunks. A page can be very short or very long.
 
 ### 10.2 Node chunks
 
@@ -387,7 +386,7 @@ Consequences:
 - parent and child node text can overlap;
 - “node chunks” in `/raw` are a generated view, not an independent chunk table;
 - the agent normally uses node titles/summaries to choose pages and then reads page chunks;
-- changing a tree span changes the generated node text without changing `pages.json`.
+- changing a tree span changes the generated node text without changing the stored `pages` column.
 
 ### 10.3 There is no fixed-size text embedding pipeline
 
@@ -432,19 +431,18 @@ The indexing-call count therefore depends on the extracted tree; it is not one c
 - A flat fallback with more than 10 page nodes is rejected rather than accepted as an expensive low-quality index.
 - PageIndex uses PDFium for the tree and PyPDF2 for stored page text. The local API verifies that tree page ranges stay inside PyPDF2's page count to catch parser disagreement.
 
-### 11.4 On-disk layout
+### 11.4 Storage: the `document_trees` table
 
-```text
-RAG_STORAGE_PATH/
-|-- manifest.json
-`-- docs/
-    `-- pi-<id>/
-        |-- doc.json    # name, description, status, page count, mode
-        |-- tree.json   # hierarchy, page ranges, node IDs, summaries; no full text
-        `-- pages.json  # one full text entry per 1-based page
-```
+PageIndex's own knowledge structure is persisted as one row per document in Postgres, not as loose files on disk. The vendored engine's `DocStore` interface (`rag_core/local_store.py`) is implemented by `rag_core/postgres_store.py`'s `PostgresDocStore`, which is what `local_api.py` actually uses; `local_store.py`'s original file-based `DocStore` is left in the codebase unused, kept only so the swap is a one-line revert if ever needed.
 
-The `rag-data` volume is not a cache. Losing it leaves valid Postgres rows whose `rag_doc_id` points to missing content.
+| Column | Contents |
+|---|---|
+| `doc_id` (primary key) | The engine's own id, `pi-<hash>` — same value as `documents.rag_doc_id` |
+| `meta` (jsonb) | name, description, status, page count, mode |
+| `tree` (jsonb) | hierarchy, page ranges, node IDs, summaries; no full text |
+| `pages` (jsonb) | one full text entry per 1-based page |
+
+This is not a cache. Losing this table leaves valid `documents` rows whose `rag_doc_id` points to missing content — the same failure mode the old `rag-data` volume had, just on a store that now gets backed up alongside the rest of Postgres. Raw binary files (originals, rendered previews, diagram page PNGs) are unaffected — they remain in MinIO/S3 regardless of this table's state. A single global Postgres advisory lock (`pg_advisory_lock`, one fixed key) replaces the old file-based mutex around the check-then-write name-uniqueness race in `submit_document`.
 
 ## 12. Chat-to-response flow
 
@@ -574,7 +572,7 @@ PageIndex first represents its tool specifications as an in-process `MCPServer` 
 
 ```text
 Model -> Agents SDK FunctionTool -> in-process MCP adapter
-      -> Python PageIndex tool -> local rag-data files
+      -> Python PageIndex tool -> document_trees rows (Postgres)
 ```
 
 There is no network MCP server in this application's active path. The vendored library includes cloud MCP and `HostedMCPTool` branches, but this application constructs a local client without a PageIndex cloud API key and does not pass `hosted=True`.
@@ -583,10 +581,10 @@ There is no network MCP server in this application's active path. The vendored l
 
 | Tool | Key inputs | What it reads | Important behavior |
 |---|---|---|---|
-| `browse_documents` | `offset`, `limit` | Local `doc.json`/manifest metadata | Newest first, up to 50. Local schemas hide folder and semantic-relevance options. |
-| `get_document` | `doc_name`, optional wait flag | One PageIndex metadata record | Returns status, description, page count, and next-step guidance. |
-| `get_document_structure` | `doc_name`, `part` | `tree.json` | Returns title/summary hierarchy; paginates large JSON below about 95% of a 100,000-character tool limit. |
-| `get_page_content` | `doc_name`, `pages` | `pages.json` | Accepts forms like `5`, `3,7,10`, `5-10`, `1-3,7`; trims output to the same character budget. |
+| `browse_documents` | `offset`, `limit` | `document_trees.meta` across all rows | Newest first, up to 50. Local schemas hide folder and semantic-relevance options. |
+| `get_document` | `doc_name`, optional wait flag | One `document_trees.meta` record | Returns status, description, page count, and next-step guidance. |
+| `get_document_structure` | `doc_name`, `part` | `document_trees.tree` | Returns title/summary hierarchy; paginates large JSON below about 95% of a 100,000-character tool limit. |
+| `get_page_content` | `doc_name`, `pages` | `document_trees.pages` | Accepts forms like `5`, `3,7,10`, `5-10`, `1-3,7`; trims output to the same character budget. |
 
 `remove_document` exists in the vendored management tool set but is not exposed to the chat agent because `include_management` is left false. The agent cannot delete, upload, move, or edit documents.
 
@@ -944,14 +942,13 @@ docker compose -f docker-compose.dev.yml exec -T frontend npx tsc --noEmit
 
 ### 23.3 Backup as one logical system
 
-A complete backup must keep these four stores consistent:
+A complete backup must keep these stores consistent:
 
-1. Postgres volume/database;
+1. Postgres volume/database (includes `document_trees`, so PageIndex tree/page JSON is covered by the same backup as the rest of the schema);
 2. MinIO/S3 bucket;
-3. Qdrant collection data;
-4. `rag-data` tree volume.
+3. Qdrant collection data.
 
-Backing up only Postgres is not enough to restore search or previews.
+Backing up only the application tables' logical subset of Postgres and skipping MinIO/S3 or Qdrant is not enough to restore search, previews, or diagram retrieval.
 
 ## 24. Known limitations and audit findings
 
@@ -1034,7 +1031,7 @@ This repository routes these SDK-shaped calls through OpenRouter, so provider su
 | Upload fails immediately | Extension allowlist, JWT, MinIO bucket/credentials, backend logs |
 | Stuck at extracting | Backend restart, provider error, background task exception, document row `error`, `/raw` |
 | Scanned PDF is expensive/slow | Page count, 200 DPI raster memory, four-call vision concurrency, per-page embeddings |
-| Document indexed but agent cannot read it | `rag_doc_id`, `rag-data/docs/<id>`, `doc.json/pages.json/tree.json` |
+| Document indexed but agent cannot read it | `rag_doc_id`, whether a matching row exists in `document_trees`, `meta`/`tree`/`pages` columns for that row |
 | Text answer misses content | Check `/raw` page text, tree ranges, selected document IDs, tool calls, format normalization loss |
 | Diagram answer missing | PDF classification, visual keyword trigger, current Qdrant collection, document filter, vision verdict |
 | Citations have no preview target | Citation document name to `rag_doc_id` resolution, API UUID mapping, duplicate/renamed PageIndex names |

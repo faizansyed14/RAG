@@ -63,6 +63,7 @@ pluggy==1.6.0
 portalocker==3.2.0
 propcache==0.5.4
 protobuf==7.36.2
+psycopg2-binary==2.9.13
 pycparser==3.0
 pydantic==2.13.5
 pydantic-settings==2.15.0

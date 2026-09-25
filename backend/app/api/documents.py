@@ -5,7 +5,7 @@ import logging
 import uuid
 from collections import defaultdict
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,11 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import audit
 from app.core.config import get_settings
 from app.core.object_store import get_object_store
-from app.core.ratelimit import limit_user
 from app.core.upload_validation import CONTENT_TYPES, extension_of, read_capped, sanitize_filename, validate_content
 from app.core.security import require_admin, require_user
 from app.ingestion.progress import subscribe, unsubscribe
-from app.ingestion.router import ingest_document
+from app.ingestion.router import prepare_retry, schedule_ingest
 from app.models.db import DiagramPage, Document, DocumentFolder, Folder, get_session
 from app.models.schemas import DocumentOut, DocumentTreeResponse, SetDocumentFoldersRequest, UploadResponse
 from app.rag_service import delete_document as rag_delete_document, get_index_dump, get_tree
@@ -65,9 +64,8 @@ async def _add_to_folder(session: AsyncSession, document_id: uuid.UUID, folder_i
     await session.commit()
 
 
-@router.post("", response_model=UploadResponse, dependencies=[Depends(limit_user("upload", "rl_upload_per_hour", 3600))])
+@router.post("", response_model=UploadResponse)
 async def upload_document(
-    background_tasks: BackgroundTasks,
     file: UploadFile,
     folder_id: uuid.UUID | None = Form(None),
     admin=Depends(require_admin),
@@ -98,11 +96,16 @@ async def upload_document(
         # not silently do nothing.
         if folder_id is not None:
             await _add_to_folder(session, existing_doc.document_id, folder_id)
+        if existing_doc.status == "failed":
+            # Uploading the same file again is how you retry a failed one.
+            await prepare_retry(session, existing_doc)
+            schedule_ingest(existing_doc.document_id, existing_doc.storage_key, existing_doc.doc_type)
+            return UploadResponse(document_id=existing_doc.document_id, status="queued")
         return UploadResponse(document_id=existing_doc.document_id, status=existing_doc.status)
 
     store = get_object_store()
     storage_key = f"originals/{uuid.uuid4()}/{filename}"
-    store.put_object(storage_key, data, content_type=CONTENT_TYPES[ext])
+    await asyncio.to_thread(store.put_object, storage_key, data, content_type=CONTENT_TYPES[ext])
 
     doc = Document(filename=filename, doc_type=doc_type, content_hash=content_hash,
                     storage_key=storage_key, status="queued")
@@ -114,7 +117,9 @@ async def upload_document(
         await _add_to_folder(session, doc.document_id, folder_id)
 
     audit("document_uploaded", by=admin.username, document=doc.document_id, type=doc_type, bytes=len(data))
-    background_tasks.add_task(ingest_document, doc.document_id, storage_key, doc_type)
+    # Hand the connection back to the pool before the (long) indexing job starts.
+    await session.close()
+    schedule_ingest(doc.document_id, storage_key, doc_type)
     return UploadResponse(document_id=doc.document_id, status="queued")
 
 
