@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import {
+  BookOpen,
   FileText,
   LogOut,
   Menu,
@@ -519,6 +520,17 @@ export default function Home() {
             </div>
           </div>
           <div className="ml-auto flex items-center gap-1">
+            {(view === "chats" || view === "chat") && (
+              <a
+                href="/RAG.html"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mr-1 inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted transition hover:border-foreground hover:text-foreground"
+                title="How RAG works"
+              >
+                <BookOpen className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Know more</span>
+              </a>
+            )}
             <span className="mr-2 hidden items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] font-medium text-muted sm:inline-flex">
               <ShieldCheck className="h-3 w-3 text-accent" /> Private workspace
             </span>

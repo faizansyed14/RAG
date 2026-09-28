@@ -924,7 +924,7 @@ bash scripts/dev-start.sh
 The script builds/starts containers, waits for Postgres, and runs:
 
 ```bash
-docker compose -f docker-compose.dev.yml exec -T backend alembic upgrade head
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T backend alembic upgrade head
 ```
 
 Frontend: `http://localhost:3000`  
@@ -934,10 +934,10 @@ MinIO console: `http://localhost:9001`
 ### 23.2 Verification commands
 
 ```bash
-docker compose -f docker-compose.dev.yml ps
-docker compose -f docker-compose.dev.yml logs -f backend
-docker compose -f docker-compose.dev.yml exec -T backend pytest -q
-docker compose -f docker-compose.dev.yml exec -T frontend npx tsc --noEmit
+docker compose --env-file .env.dev -f docker-compose.dev.yml ps
+docker compose --env-file .env.dev -f docker-compose.dev.yml logs -f backend
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T backend pytest -q
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T frontend npx tsc --noEmit
 ```
 
 ### 23.3 Backup as one logical system

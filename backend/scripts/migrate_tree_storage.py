@@ -5,7 +5,7 @@ Idempotent -- safe to re-run; each document is an upsert (ON CONFLICT DO UPDATE)
 this twice just rewrites the same rows. The .rag-data files are left in place, untouched.
 
 Run after `alembic upgrade head`:
-    docker compose -f docker-compose.dev.yml exec backend python -m scripts.migrate_tree_storage
+    docker compose --env-file .env.dev -f docker-compose.dev.yml exec backend python -m scripts.migrate_tree_storage
 """
 
 import json

@@ -2,7 +2,7 @@
 
 import { motion, useReducedMotion } from "framer-motion";
 import Image from "next/image";
-import { ArrowRight, Check } from "lucide-react";
+import { ArrowRight, BookOpen, Check } from "lucide-react";
 import { Logo } from "@/components/Logo";
 
 interface Props {
@@ -21,7 +21,15 @@ export function BusinessLanding({ onSignIn }: Props) {
           <a href="#top" aria-label="ALAIN home">
             <Logo inverse showDescriptor />
           </a>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-3">
+            <a
+              href="/RAG.html"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-10 items-center gap-2 border border-white/30 px-5 text-xs font-medium text-white/85 transition duration-500 hover:border-white hover:text-white"
+            >
+              <BookOpen className="h-3.5 w-3.5" /> Know more
+            </a>
             <button
               type="button"
               onClick={onSignIn}
