@@ -78,13 +78,14 @@ flowchart LR
 
 | Service | Technology | Host port | Persistent data |
 |---|---|---:|---|
-| `frontend` | Node 20, Next.js dev server | `3000` | Browser `localStorage`; source bind mount in dev |
-| `backend` | Python 3.12, Uvicorn, FastAPI | `8000` | Stateless; tree/page JSON lives in Postgres (`document_trees`) |
-| `postgres` | Postgres 16 | `5432` | `pgdata` |
-| `qdrant` | Qdrant | `6333` | `qdrant-data` |
-| `minio` | MinIO, S3-compatible object storage | `9000`; console `9001` | `minio-data` |
+| `nginx` | nginx, TLS termination + reverse proxy | `80`, `443` | none (config only) |
+| `frontend` | Node 20, Next.js dev server | internal only | Browser `localStorage`; source bind mount in dev |
+| `backend` | Python 3.12, Uvicorn, FastAPI | internal only | Stateless; tree/page JSON lives in Postgres (`document_trees`) |
+| `postgres` | Postgres 16 | internal only | `pgdata` |
+| `qdrant` | Qdrant | internal only | `qdrant-data` |
+| `minio` | MinIO, S3-compatible object storage | `9000` (API only) | `minio-data` |
 
-The definitions are in [`docker-compose.dev.yml`](../docker-compose.dev.yml). The backend creates the configured S3 bucket during FastAPI startup, but database migrations are run separately by [`scripts/dev-start.sh`](../scripts/dev-start.sh).
+nginx is the only public entry point for the app itself (same `infra/nginx/nginx.conf` prod uses — TLS, SSE-aware proxying, rate limiting); `frontend`/`backend`/`postgres`/`qdrant` are reachable only on the Docker-internal network. MinIO's API port is the one deliberate exception: the browser fetches presigned preview URLs from it directly, so it stays published (plain HTTP) rather than proxied through nginx — see `docker-compose.dev.yml`'s `minio` service comment. Its admin console (`9001`) is not published. The definitions are in [`docker-compose.dev.yml`](../docker-compose.dev.yml). The backend creates the configured S3 bucket during FastAPI startup, but database migrations are run separately by [`scripts/dev-start.sh`](../scripts/dev-start.sh), which also checks `TLS_CERT_DIR` has a cert before starting.
 
 ## 4. Technology stack
 
@@ -918,18 +919,20 @@ From the repository root:
 ```bash
 cp .env.dev.example .env.dev
 # Fill in secrets, especially OPENROUTER_API_KEY and production-unsafe defaults.
+# Also set TLS_CERT_DIR -- see .env.dev.example for generating a local
+# self-signed cert (fine for localhost) or a real one via certbot for a domain.
 bash scripts/dev-start.sh
 ```
 
-The script builds/starts containers, waits for Postgres, and runs:
+The script checks `TLS_CERT_DIR` has a cert, builds/starts containers, waits for Postgres, and runs:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T backend alembic upgrade head
 ```
 
-Frontend: `http://localhost:3000`  
-Backend: `http://localhost:8000`  
-MinIO console: `http://localhost:9001`
+App (frontend + API, via nginx): `https://localhost` (or your domain on EC2) -- browsers will warn
+on the local self-signed cert, that's expected. `frontend`/`backend` are no longer directly
+published; only `nginx` (80/443) and `minio`'s API port (9000, for browser preview fetches) are.
 
 ### 23.2 Verification commands
 

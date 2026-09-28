@@ -9,8 +9,10 @@ credentials are ${VAR:?...} placeholders in docker-compose.dev.yml, resolved by
 the compose CLI itself (separate from env_file:, which only reaches the app
 containers) -- compose parses and requires them even for `ps`/`logs`/`down`.
 
-Services: backend (:8000) · frontend (:3000) · postgres (:5432) ·
-qdrant (:6333) · minio (:9000 api, :9001 console)
+Services: nginx (:80, :443 -- the only public app entry point) · minio (:9000
+api only, browser-facing presigned preview URLs). backend/frontend/postgres/
+qdrant are internal-only now (nginx fronts everything except minio's API --
+see docker-compose.dev.yml's minio comment for why).
 
 
 START

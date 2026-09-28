@@ -40,6 +40,8 @@ All knobs are `RL_*` settings in `core/config.py`. Behind a proxy set `TRUSTED_P
 ## Deploying
 `docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build` (copy `.env.prod.example` first). Only nginx publishes ports; Postgres and Qdrant are internal; use a private S3 bucket. Put real certificates in `TLS_CERT_DIR`.
 
+`docker-compose.dev.yml` (`bash scripts/dev-start.sh`) also runs behind nginx now, for cases like a dev stack deployed on a public EC2 instance rather than only `localhost`. Postgres, Qdrant, backend and frontend are internal-only there too. One deliberate exception: MinIO's API port (9000) stays directly published (plain HTTP) because the browser fetches presigned preview URLs from it directly -- see `docker-compose.dev.yml`'s `minio` service comment. `TLS_CERT_DIR` needs a real cert (see `.env.dev.example` for a local self-signed cert or a real `certbot` one for a domain); `dev-stop.sh` never removes volumes unless run with `--wipe`.
+
 ## Known limits
 - The JWT is kept in `localStorage` (readable by any script that runs on the page); the CSP and short token life reduce, not remove, that risk.
 - The CSP allows inline scripts because Next.js hydration needs them; a nonce-based policy needs a middleware and dynamic rendering.

@@ -11,9 +11,11 @@ at all -- it needs a URL built against S3_PUBLIC_ENDPOINT_URL
 S3_PUBLIC_ENDPOINT_URL only needs to be set for local/MinIO dev.
 """
 
+import warnings
 from functools import lru_cache
 
 import boto3
+import urllib3
 from botocore.exceptions import ClientError
 
 from app.core.config import get_settings
@@ -23,12 +25,24 @@ class ObjectStore:
     def __init__(self) -> None:
         settings = get_settings()
         self._bucket = settings.s3_bucket
+        # Real S3 (prod, s3_endpoint_url unset) always verifies normally. Self-hosted
+        # MinIO (dev) reuses the public domain's Let's Encrypt cert for its own TLS
+        # (docker-compose.dev.yml's minio service) -- that cert's name is the public
+        # domain, not the internal "minio" hostname this client actually connects to,
+        # so hostname verification would always fail here even though the cert itself
+        # is real. This internal hop never leaves the Docker network, so skipping
+        # verification only for it (never for real S3) trades that mismatch away
+        # safely rather than disabling verification everywhere.
+        internal_https = bool(settings.s3_endpoint_url and settings.s3_endpoint_url.startswith("https://"))
+        if internal_https:
+            warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
         self._client = boto3.client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
             aws_access_key_id=settings.s3_access_key or None,
             aws_secret_access_key=settings.s3_secret_key or None,
             region_name=settings.s3_region,
+            verify=not internal_https,
         )
         # Presigned URLs only -- see module docstring.
         public_endpoint = settings.s3_public_endpoint_url or settings.s3_endpoint_url

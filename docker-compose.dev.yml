@@ -1,4 +1,17 @@
 services:
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/proxy_params:/etc/nginx/proxy_params:ro
+      - ${TLS_CERT_DIR:?set TLS_CERT_DIR in .env.dev to a folder with fullchain.pem and privkey.pem}:/etc/nginx/certs:ro
+    depends_on:
+      - backend
+      - frontend
+
   backend:
     build:
       context: ./backend
@@ -10,8 +23,10 @@ services:
       # volume orphans every rag_doc_id in Postgres.
       - rag-data:/app/.rag-data
     env_file: .env.dev
-    ports:
-      - "8000:8000"
+    environment:
+      TRUSTED_PROXY_HOPS: "1"
+    expose:
+      - "8000"
     depends_on:
       - postgres
       - qdrant
@@ -25,8 +40,8 @@ services:
       - ./frontend:/app
       - /app/node_modules
     env_file: .env.dev
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     depends_on:
       - backend
 
@@ -36,8 +51,6 @@ services:
       POSTGRES_DB: rag_engine
       POSTGRES_USER: rag
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.dev (must match POSTGRES_DSN's password)}
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -45,8 +58,6 @@ services:
     image: qdrant/qdrant:latest
     environment:
       QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?set QDRANT_API_KEY in .env.dev}
-    ports:
-      - "6333:6333"
     volumes:
       - qdrant-data:/qdrant/storage
 
@@ -57,10 +68,21 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-rag}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env.dev (must match S3_SECRET_KEY)}
     ports:
+      # API only -- the browser fetches presigned preview URLs from this
+      # directly (see .env.dev's S3_PUBLIC_ENDPOINT_URL), so it can't move
+      # behind nginx without careful presigned-signature-safe path proxying.
+      # Console (9001) is admin-only -- no reason to publish it.
       - "9000:9000"
-      - "9001:9001"
     volumes:
       - minio-data:/data
+      # Reuses the same cert nginx uses (see TLS_CERT_DIR) so MinIO serves
+      # HTTPS too -- presigned preview URLs otherwise travel in plaintext
+      # since this port isn't behind nginx. MinIO's fixed filenames, source
+      # renamed via the bind mount target. Presence of certs here switches
+      # MinIO to HTTPS-only -- see core/object_store.py for why the
+      # backend's own internal client skips hostname verification.
+      - ${TLS_CERT_DIR}/fullchain.pem:/root/.minio/certs/public.crt:ro
+      - ${TLS_CERT_DIR}/privkey.pem:/root/.minio/certs/private.key:ro
 
 volumes:
   pgdata:
