@@ -47,7 +47,6 @@ class Settings(BaseSettings):
     rl_admin_write_per_minute: int = 60
     rl_me_per_minute: int = 60
     rl_global_per_minute: int = 300      # coarse per-IP backstop, in-process
-    chat_lease_seconds: int = 300        # max time a single chat stream may hold the user's lease
 
     # --- Per-user chat quota (see core/quota.py) ---
     chat_credit_cost: int = 10          # credits charged per chat message

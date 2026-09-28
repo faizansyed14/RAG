@@ -133,8 +133,6 @@ class User(Base):
     token_version: Mapped[int] = mapped_column(nullable=False, default=0, server_default=text("0"))
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # One chat stream at a time per user; expires on its own if a worker dies mid-stream.
-    chat_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class UsageEvent(Base):

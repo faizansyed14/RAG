@@ -4,12 +4,9 @@ without adding infrastructure.
 
 Fixed windows: one row per (key, window_start) incremented with a single atomic
 INSERT ... ON CONFLICT DO UPDATE, so concurrent requests can't slip past a limit.
-The chat concurrency lease is one column on the user row, taken with an atomic
-conditional UPDATE and expiring on its own if a worker dies mid-stream.
 """
 
 import math
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -113,26 +110,3 @@ def limit_user(scope: str, setting: str, window_seconds: int):
             raise throttled(result.retry_after_seconds)
 
     return dependency
-
-
-async def acquire_chat_lease(user_id: uuid.UUID, now: datetime | None = None) -> bool:
-    """Take the user's single chat-stream slot. False if another stream still holds it."""
-    now = now or utcnow()
-    until = now + timedelta(seconds=get_settings().chat_lease_seconds)
-    async with async_session() as session:
-        result = await session.execute(
-            text(
-                "UPDATE users SET chat_lease_until = :until "
-                "WHERE user_id = :id AND (chat_lease_until IS NULL OR chat_lease_until < :now) RETURNING user_id"
-            ),
-            {"until": until, "id": user_id, "now": now},
-        )
-        acquired = result.first() is not None
-        await session.commit()
-    return acquired
-
-
-async def release_chat_lease(user_id: uuid.UUID) -> None:
-    async with async_session() as session:
-        await session.execute(text("UPDATE users SET chat_lease_until = NULL WHERE user_id = :id"), {"id": user_id})
-        await session.commit()

@@ -282,30 +282,6 @@ async def test_chat_burst_limit_and_error_code(make_user, indexed_document, monk
     assert third.json()["detail"]["code"] == "rate_limited" and third.headers["retry-after"]
 
 
-async def test_only_one_chat_stream_at_a_time(make_user, indexed_document, monkeypatch):
-    user, headers, _ = await make_user(credit_limit=1000)
-    assert await ratelimit.acquire_chat_lease(user.user_id) is True
-    _patch_stream(monkeypatch, [{"type": "answer", "delta": "ok"}, {"type": "done"}])
-    async with _client(headers) as client:
-        blocked = await client.post("/api/chat", json={"query": "hello docs?", "document_ids": [str(indexed_document)]})
-    assert blocked.status_code == 429 and blocked.json()["detail"]["code"] == "rate_limited"
-    assert await _used(user.user_id) == 0  # rejected before any credit was taken
-    await ratelimit.release_chat_lease(user.user_id)
-    async with _client(headers) as client:
-        ok = await client.post("/api/chat", json={"query": "hello docs?", "document_ids": [str(indexed_document)]})
-    assert ok.status_code == 200
-    assert await ratelimit.acquire_chat_lease(user.user_id) is True  # lease released after the stream
-
-
-async def test_lease_expires_on_its_own(make_user):
-    user, _, _ = await make_user()
-    now = datetime.now(timezone.utc)
-    assert await ratelimit.acquire_chat_lease(user.user_id, now=now) is True
-    assert await ratelimit.acquire_chat_lease(user.user_id, now=now + timedelta(seconds=10)) is False
-    later = now + timedelta(seconds=get_settings().chat_lease_seconds + 1)
-    assert await ratelimit.acquire_chat_lease(user.user_id, now=later) is True
-
-
 # --------------------------------------------------------------------------- rate limiter core
 
 

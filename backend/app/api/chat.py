@@ -12,7 +12,7 @@ from app.core.audit import audit
 from app.core.guardrails import sanitize_history, screen_query
 from app.core.netutil import client_ip
 from app.core.quota import Quota, QuotaExceeded, refund, reserve, snapshot
-from app.core.ratelimit import acquire_chat_lease, limit_user, release_chat_lease, throttled
+from app.core.ratelimit import limit_user
 from app.core.security import CurrentUser, get_current_user
 from app.models.db import Document, User, async_session, get_session
 from app.models.schemas import ChatRequest
@@ -106,10 +106,6 @@ async def chat(
         [{"role": m.role, "content": m.content} for m in body.history[-_MAX_HISTORY_MESSAGES:]]
     )
 
-    # One answer at a time per user; the lease expires on its own if a worker dies.
-    if not await acquire_chat_lease(user.user_id):
-        raise throttled(5, "Your previous message is still being answered. Please wait for it to finish.")
-
     # Charged up front and only after the request is known to be valid, so a
     # 400 above never costs credits. Admins are not metered.
     metered = user.role != "admin"
@@ -117,7 +113,6 @@ async def chat(
         try:
             await reserve(session, user.user_id)
         except QuotaExceeded as exc:
-            await release_chat_lease(user.user_id)
             raise HTTPException(
                 status.HTTP_429_TOO_MANY_REQUESTS,
                 detail={
@@ -128,9 +123,6 @@ async def chat(
                 },
                 headers={"Retry-After": str(exc.quota.retry_after_seconds)},
             ) from exc
-        except Exception:
-            await release_chat_lease(user.user_id)
-            raise
 
     async def event_stream():
         produced_answer = False
@@ -168,6 +160,5 @@ async def chat(
             # Client disconnected or the engine raised before `done`: no answer, no charge.
             if metered and not settled and not produced_answer:
                 await asyncio.shield(_refund_message(user.user_id))
-            await asyncio.shield(release_chat_lease(user.user_id))
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)

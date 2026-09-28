@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { motion, useReducedMotion } from "framer-motion";
-import { Volume2, VolumeX } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { Check, Volume2, VolumeX } from "lucide-react";
 import { isSpeechSupported } from "@/lib/speech";
 import type { ChatMessage, Citation, DiagramEvidence } from "@/lib/types";
 import { AnswerText } from "./AnswerText";
@@ -99,7 +99,13 @@ export function MessageBubble({ message, onCitationClick, onDiagramClick, isSpea
   );
 }
 
-function ResponseStatus({ message, tools }: { message: ChatMessage; tools: { name: string; detail: string }[] }) {
+function ResponseStatus({
+  message,
+  tools,
+}: {
+  message: ChatMessage;
+  tools: { callId?: string; name: string; detail: string; done?: boolean }[];
+}) {
   const reduced = useReducedMotion();
   const hasDraft = Boolean(message.content || message.resolvedContent);
 
@@ -129,11 +135,44 @@ function ResponseStatus({ message, tools }: { message: ChatMessage; tools: { nam
             </span>
           </span>
         </div>
-        <div className="space-y-2.5 pr-8">
-          <div className={`h-3 max-w-[22rem] rounded-md ${reduced ? "bg-surface" : "status-shimmer"}`} />
-          <div className={`h-3 max-w-[18rem] rounded-md ${reduced ? "bg-surface" : "status-shimmer"}`} />
-          <div className={`h-3 max-w-[12rem] rounded-md ${reduced ? "bg-surface" : "status-shimmer"}`} />
-        </div>
+        {tools.length > 0 ? (
+          <ul className="space-y-1.5 pr-8">
+            <AnimatePresence initial={false}>
+              {tools.map((tool, i) => (
+                <motion.li
+                  key={tool.callId ?? i}
+                  initial={reduced ? false : { opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.22, ease: "easeOut" }}
+                  className="flex items-center gap-2 text-[12px]"
+                >
+                  <span className="relative flex h-3 w-3 shrink-0 items-center justify-center">
+                    {tool.done ? (
+                      <Check className="h-3 w-3 text-foreground/50" strokeWidth={2.5} />
+                    ) : (
+                      <>
+                        {!reduced && (
+                          <span className="absolute inline-flex h-2 w-2 animate-ping rounded-full bg-foreground/25" />
+                        )}
+                        <span className="relative h-1.5 w-1.5 rounded-full bg-foreground/60" />
+                      </>
+                    )}
+                  </span>
+                  <span className={tool.done ? "text-muted" : "font-medium text-foreground/80"}>
+                    {toolLabel(tool.name)}
+                  </span>
+                  {tool.detail && <span className="truncate text-muted/70">{tool.detail}</span>}
+                </motion.li>
+              ))}
+            </AnimatePresence>
+          </ul>
+        ) : (
+          <div className="space-y-2.5 pr-8">
+            <div className={`h-3 max-w-[22rem] rounded-md ${reduced ? "bg-surface" : "status-shimmer"}`} />
+            <div className={`h-3 max-w-[18rem] rounded-md ${reduced ? "bg-surface" : "status-shimmer"}`} />
+            <div className={`h-3 max-w-[12rem] rounded-md ${reduced ? "bg-surface" : "status-shimmer"}`} />
+          </div>
+        )}
       </div>
     );
   }

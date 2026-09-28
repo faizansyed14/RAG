@@ -22,7 +22,7 @@ Refusals (layers 1, 4, 5) never cost credits.
 | What | Default |
 |---|---|
 | Login | 10 requests/min/IP; **lockout** after 5 failed attempts per username or 15 per IP (15 min) |
-| Chat | 6 requests/min/user + **one stream at a time per user** (crash-safe lease) + the credit allowance |
+| Chat | 6 requests/min/user + the credit allowance (multiple streams per user may run concurrently) |
 | Upload | 20/hour/user; size cap `MAX_UPLOAD_MB`; magic-byte / zip-bomb checks; sanitised filenames |
 | Admin writes | 60/min |
 | Everything else | 300/min/IP in-process backstop (health excluded) |

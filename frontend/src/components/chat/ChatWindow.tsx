@@ -152,10 +152,19 @@ export function ChatWindow({
         case "tool_call":
           patchAssistant((m) => ({
             ...m,
-            toolActivity: [...(m.toolActivity ?? []), { name: event.name ?? "tool", detail: summarizeArgs(event.arguments) }],
+            toolActivity: [
+              ...(m.toolActivity ?? []),
+              { callId: event.call_id, name: event.name ?? "tool", detail: summarizeArgs(event.arguments), done: false },
+            ],
           }));
           break;
         case "tool_result":
+          patchAssistant((m) => ({
+            ...m,
+            toolActivity: (m.toolActivity ?? []).map((t) =>
+              t.callId && t.callId === event.call_id ? { ...t, done: true } : t
+            ),
+          }));
           break;
         case "citations":
           patchAssistant((m) => ({

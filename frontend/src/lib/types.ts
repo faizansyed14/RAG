@@ -158,7 +158,7 @@ export interface ChatMessage {
   /** content with "[[1]](#rag-citation-01)" markers, once citations resolve -- rendered as inline pills */
   resolvedContent?: string;
   streaming?: boolean;
-  toolActivity?: { name: string; detail: string }[];
+  toolActivity?: { callId?: string; name: string; detail: string; done?: boolean }[];
   citations?: Citation[];
   diagrams?: DiagramEvidence[];
 }
