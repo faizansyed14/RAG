@@ -10,6 +10,8 @@ const ICONS: Record<DocumentOut["doc_type"], LucideIcon> = {
   txt: FileText,
   json: FileJson,
   xer: FileCode,
+  py: FileCode,
+  md: FileText,
 };
 
 export function DocIcon({ docType, className }: { docType: DocumentOut["doc_type"]; className?: string }) {

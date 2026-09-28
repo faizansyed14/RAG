@@ -3,7 +3,7 @@ export type DocumentStatus = "queued" | "extracting" | "ocr" | "indexing" | "ind
 export interface DocumentOut {
   document_id: string;
   filename: string;
-  doc_type: "pdf" | "docx" | "csv" | "xlsx" | "eml" | "txt" | "json" | "xer";
+  doc_type: "pdf" | "docx" | "csv" | "xlsx" | "eml" | "txt" | "json" | "xer" | "py" | "md";
   is_scanned: boolean;
   page_count: number | null;
   status: DocumentStatus;

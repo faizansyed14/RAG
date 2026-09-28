@@ -1,13 +1,18 @@
 """
 JSON ingestion. The tree engine's local mode only accepts PDF input (see
 app/rag_service.py's module docstring), so this pretty-prints the parsed
-document into one preformatted "code" block (preserving structure -- see
-text_to_pdf.py) and renders it through the shared block pipeline
-(blocks_ingest.py).
+document into preformatted "code" block(s) (preserving structure -- see
+text_to_pdf.py) and renders them through the shared block pipeline
+(blocks_ingest.py). Large files are split into chunks by chunking.py -- see
+its module docstring for why (generic by line count rather than JSON
+structure, since that varies too much -- array, deeply nested object, ... --
+to chunk semantically for every shape).
 """
 
 import json
 from pathlib import Path
+
+from app.ingestion.chunking import chunk_as_code_blocks
 
 
 def extract_blocks(file_path: str) -> list[dict]:
@@ -20,7 +25,7 @@ def extract_blocks(file_path: str) -> list[dict]:
     text = text.strip()
     if not text:
         return []
-    return [{"type": "heading", "text": Path(file_path).stem}, {"type": "code", "text": text}]
+    return chunk_as_code_blocks(Path(file_path).stem, text)
 
 
 def parse_json(file_path: str, document_id) -> dict:

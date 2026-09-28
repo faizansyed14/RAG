@@ -17,7 +17,18 @@ import uuid
 from pathlib import Path
 
 from app.core.object_store import get_object_store
-from app.ingestion import csv_ingest, docx_ingest, eml_ingest, json_ingest, pdf_ingest, txt_ingest, xer_ingest, xlsx_ingest
+from app.ingestion import (
+    csv_ingest,
+    docx_ingest,
+    eml_ingest,
+    json_ingest,
+    markdown_ingest,
+    pdf_ingest,
+    python_ingest,
+    txt_ingest,
+    xer_ingest,
+    xlsx_ingest,
+)
 from app.ingestion.diagram_pipeline import process_pdf_pages
 from app.ingestion.progress import publish
 from app.ingestion.text_to_pdf import render_ocr_pages_as_pdf
@@ -40,6 +51,8 @@ _BLOCK_PARSERS = {
     "txt": txt_ingest.parse_txt,
     "json": json_ingest.parse_json,
     "xer": xer_ingest.parse_xer,
+    "py": python_ingest.parse_python,
+    "md": markdown_ingest.parse_markdown,
 }
 _STATUS_DETAIL = {
     "docx": "Extracting paragraphs and tables",
@@ -49,6 +62,8 @@ _STATUS_DETAIL = {
     "txt": "Extracting text",
     "json": "Extracting document",
     "xer": "Extracting schedule tables",
+    "py": "Extracting source",
+    "md": "Extracting sections",
 }
 
 

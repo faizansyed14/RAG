@@ -5,6 +5,10 @@ const isProd = process.env.NODE_ENV === "production";
 // PDF/image URLs). Set both for real deployments -- see .env.prod.example.
 const apiOrigin = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 const storageOrigin = process.env.NEXT_PUBLIC_STORAGE_ORIGIN || "http://localhost:9000";
+// Bare hostname only -- no protocol, no port (that's all Next dev's origin
+// check compares against). Since the API/frontend share one origin behind
+// nginx, this is the same host the page is actually served from.
+const devOriginHost = apiOrigin.replace(/^https?:\/\//, "").split(":")[0];
 
 // Next's own hydration scripts are inline, so script-src keeps 'unsafe-inline'
 // (a nonce-based policy would need a middleware and dynamic rendering for every page).
@@ -44,6 +48,10 @@ const nextConfig = {
   devIndicators: false,
   // Pin the workspace root so a stray lockfile in a parent directory can't change resolution.
   turbopack: { root: path.join(__dirname) },
+  // Next dev refuses cross-origin requests by default (DNS-rebinding protection) --
+  // without this, the app behind nginx on a real domain/IP stays a blank spinner
+  // (requests silently rejected). No-op in production (`next start` ignores this).
+  allowedDevOrigins: [devOriginHost],
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

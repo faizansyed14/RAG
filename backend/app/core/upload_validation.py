@@ -20,6 +20,8 @@ CONTENT_TYPES = {
     "txt": "text/plain",
     "json": "application/json",
     "xer": "text/plain",
+    "py": "text/x-python",
+    "md": "text/markdown",
 }
 
 _MAX_FILENAME = 150

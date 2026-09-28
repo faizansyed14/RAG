@@ -28,7 +28,7 @@ interface Props {
 const BULK_THRESHOLD = 6;
 const BULK_UPLOAD_PARALLELISM = 3;
 const BULK_POLL_MS = 3000;
-const SUPPORTED_EXTENSIONS = new Set(["pdf", "docx", "csv", "xlsx", "eml", "txt", "json", "xer"]);
+const SUPPORTED_EXTENSIONS = new Set(["pdf", "docx", "csv", "xlsx", "eml", "txt", "json", "xer", "py", "md"]);
 // Keep the list light for very large batches: finished files collapse into the counter.
 const HIDE_FINISHED_ABOVE = 30;
 
@@ -227,7 +227,7 @@ export function FileDropzone({ onIndexed, folderId }: Props) {
         <input
           ref={inputRef}
           type="file"
-          accept=".pdf,.docx,.csv,.xlsx,.eml,.txt,.json,.xer"
+          accept=".pdf,.docx,.csv,.xlsx,.eml,.txt,.json,.xer,.py,.md"
           multiple
           hidden
           onChange={(event) => {

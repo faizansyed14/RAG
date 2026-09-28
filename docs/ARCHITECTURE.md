@@ -247,7 +247,7 @@ sequenceDiagram
             ING->>VIS: Embed caption + description + OCR
             ING->>Q: Upsert one vector per page
             ING->>PI: Submit synthetic OCR PDF in flash mode
-        else DOCX/CSV/XLSX/EML/TXT/JSON/XER
+        else DOCX/CSV/XLSX/EML/TXT/JSON/XER/PY/MD
             ING->>ING: Parse semantic blocks and render a PDF
             ING->>S3: Store previews/{document_id}/rendered.pdf
             ING->>PI: Submit rendered PDF in flash mode
@@ -265,7 +265,7 @@ sequenceDiagram
 
 - `file`: required.
 - `folder_id`: optional UUID.
-- Allowed extensions: `pdf`, `docx`, `csv`, `xlsx`, `eml`, `txt`, `json`, `xer`.
+- Allowed extensions: `pdf`, `docx`, `csv`, `xlsx`, `eml`, `txt`, `json`, `xer`, `py`, `md`.
 
 The complete request body is read into memory and hashed with SHA-256. `documents.content_hash` is unique across the whole application.
 

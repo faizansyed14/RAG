@@ -62,6 +62,7 @@ export function DocumentInspector({ document, onClose, onOpenPreview, previewOnl
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!previewOnly);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [numPages, setNumPages] = useState(0);
 
   useEffect(() => {
@@ -87,12 +88,18 @@ export function DocumentInspector({ document, onClose, onOpenPreview, previewOnl
   useEffect(() => {
     if (tab !== "preview") return;
     let cancelled = false;
+    setPreviewUrl(null);
+    setPreviewError(null);
     getPreviewUrl(document.document_id)
       .then((url) => {
         if (!cancelled) setPreviewUrl(url);
       })
       .catch(() => {
-        if (!cancelled) setPreviewUrl(null);
+        // Most commonly a 404 -- ingestion failed before a rendered preview
+        // ever existed (see api/documents.py's preview_document). Not a
+        // valid PDF to hand the viewer either way, so show a clear message
+        // instead of leaving "Loading preview..." up forever.
+        if (!cancelled) setPreviewError("No preview available for this document.");
       });
     return () => {
       cancelled = true;
@@ -328,7 +335,8 @@ export function DocumentInspector({ document, onClose, onOpenPreview, previewOnl
 
         {!loading && tab === "preview" && (
           <div className="mx-auto flex h-[calc(100vh-8rem)] max-w-4xl flex-col">
-            {!previewUrl && <p className="py-12 text-center text-sm text-muted">Loading preview…</p>}
+            {!previewUrl && !previewError && <p className="py-12 text-center text-sm text-muted">Loading preview…</p>}
+            {previewError && <p className="py-12 text-center text-sm text-muted">{previewError}</p>}
             {previewUrl && (
               <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-surface-raised shadow-panel">
                 <PdfPreview

@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 _ALLOWED_TYPES = {
     "pdf": "pdf", "docx": "docx", "csv": "csv", "xlsx": "xlsx", "eml": "eml",
-    "txt": "txt", "json": "json", "xer": "xer",
+    "txt": "txt", "json": "json", "xer": "xer", "py": "py", "md": "md",
 }
 
 
@@ -76,7 +76,7 @@ async def upload_document(
     if ext not in _ALLOWED_TYPES:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            f"Unsupported file type: .{ext} (pdf, docx, csv, xlsx, eml, txt, json, or xer only)",
+            f"Unsupported file type: .{ext} (pdf, docx, csv, xlsx, eml, txt, json, xer, py, or md only)",
         )
     doc_type = _ALLOWED_TYPES[ext]
 
@@ -329,10 +329,23 @@ async def preview_document(
     doc = await session.get(Document, document_id)
     if doc is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
-    # DOCX: preview the rendered PDF actually fed to the tree engine (a raw
-    # .docx can't be rendered by the frontend's PDF viewer) -- see
-    # ingestion/docx_ingest.py. PDF: the original is already a PDF.
-    key = doc.preview_storage_key or doc.storage_key
+    # DOCX/CSV/etc: preview the rendered PDF actually fed to the tree engine
+    # (the raw original can't be rendered by the frontend's PDF viewer) --
+    # see ingestion/blocks_ingest.py. PDF: the original is already a PDF, so
+    # it's fine to fall back to it -- but only for doc_type "pdf": for every
+    # other format, preview_storage_key is only ever set *after* ingestion
+    # succeeds (blocks_ingest.py uploads it only once submit_pdf doesn't
+    # raise), so a failed non-PDF upload has no preview_storage_key and no
+    # valid PDF to fall back to either -- falling back to storage_key there
+    # used to hand the frontend's PDF viewer the raw .csv/.docx bytes,
+    # crashing it with "Invalid PDF structure" instead of a clear "no
+    # preview yet" response.
+    if doc.preview_storage_key:
+        key = doc.preview_storage_key
+    elif doc.doc_type == "pdf":
+        key = doc.storage_key
+    else:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No preview available for this document")
     url = get_object_store().presigned_url(key)
     return {"url": url}
 

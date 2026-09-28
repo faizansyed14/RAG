@@ -285,7 +285,7 @@ export function DocumentPicker({ documents, folders, selectedIds, onChange, onUp
               <input
                 ref={inputRef}
                 type="file"
-                accept=".pdf,.docx,.csv,.xlsx,.eml,.txt,.json,.xer"
+                accept=".pdf,.docx,.csv,.xlsx,.eml,.txt,.json,.xer,.py,.md"
                 multiple
                 hidden
                 onChange={(event) => {

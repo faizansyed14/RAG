@@ -20,7 +20,7 @@ class Base(DeclarativeBase):
     pass
 
 
-_DOC_TYPES = ("pdf", "docx", "csv", "xlsx", "eml", "txt", "json", "xer")
+_DOC_TYPES = ("pdf", "docx", "csv", "xlsx", "eml", "txt", "json", "xer", "py", "md")
 _DOC_STATUSES = ("queued", "extracting", "ocr", "indexing", "indexed", "failed")
 
 
