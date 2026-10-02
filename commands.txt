@@ -1,72 +1,90 @@
-RAG dev stack — Docker commands
-================================
-All commands run from the repo root (C:\Users\FAIZAN\Desktop\RAG), where
-docker-compose.dev.yml lives. Project name is "rag", so volumes are named
-rag_pgdata, rag_qdrant-data, rag_minio-data, rag_rag-data.
+RAG stack — Docker commands
+============================
+All commands run from the repo root (C:\Users\FAIZAN\Desktop\RAG). Project
+name is "rag", so volumes are named rag_pgdata, rag_qdrant-data,
+rag_minio-data, rag_rag-data (plus rag_pgdata etc. per stack if you run more
+than one of local/dev/prod against the same Docker host).
 
---env-file .env.dev is required on every command below: postgres/minio/qdrant's
-credentials are ${VAR:?...} placeholders in docker-compose.dev.yml, resolved by
-the compose CLI itself (separate from env_file:, which only reaches the app
-containers) -- compose parses and requires them even for `ps`/`logs`/`down`.
+Three stacks, one pair of start/stop scripts each under scripts/<name>/:
+  scripts/local/{start,stop}.sh -- docker-compose.local.yml, plain HTTP, no
+    nginx, no TLS cert. Your own machine only -- see that file's header
+    comment for why no TLS is needed here.
+  scripts/dev/{start,stop}.sh   -- docker-compose.dev.yml, nginx + TLS, for
+    deploying this same self-hosted stack (Postgres/Qdrant/MinIO on Docker
+    volumes) to a public EC2 (or similar) instance instead of only localhost.
+  scripts/prod/{start,stop}.sh  -- docker-compose.prod.yml, nginx + TLS,
+    managed RDS/S3 instead of self-hosted Postgres/MinIO.
 
-Services: nginx (:80, :443 -- the only public app entry point) · minio (:9000
-api only, browser-facing presigned preview URLs). backend/frontend/postgres/
-qdrant are internal-only now (nginx fronts everything except minio's API --
-see docker-compose.dev.yml's minio comment for why).
+local/dev read --env-file .env.dev; prod reads --env-file .env.prod. Every
+docker compose command below needs that flag even for `ps`/`logs`/`down`:
+postgres/minio/qdrant/nginx credentials and cert paths are ${VAR:?...}
+placeholders in the compose files themselves, resolved by the compose CLI
+(separate from env_file:, which only reaches the app containers).
+
+Services (local): backend (:8000) · frontend (:3000) · postgres (:5432) ·
+qdrant (:6333) · minio (:9000 api, :9001 console).
+Services (dev/prod): only nginx (:80, :443) is public; everything else is
+internal except MinIO's API (:9000, dev only -- prod uses real S3).
 
 
 START
 -----
-# Recommended: builds images, starts everything, waits for postgres,
-# runs alembic migrations. Same as scripts/dev-start.sh.
-bash scripts/dev-start.sh
+# Local (recommended day to day):
+bash scripts/local/start.sh
 
-# Manual equivalent, no rebuild:
-docker compose --env-file .env.dev -f docker-compose.dev.yml up -d
+# Dev (EC2/public, nginx + TLS):
+bash scripts/dev/start.sh
 
-# Manual equivalent, force rebuild (after changing requirements.txt,
+# Prod (managed RDS/S3, nginx + TLS):
+bash scripts/prod/start.sh
+
+# Manual equivalent (local), no rebuild:
+docker compose --env-file .env.dev -f docker-compose.local.yml up -d
+
+# Manual equivalent (local), force rebuild (after changing requirements.txt,
 # package.json, or a Dockerfile):
-docker compose --env-file .env.dev -f docker-compose.dev.yml up -d --build
+docker compose --env-file .env.dev -f docker-compose.local.yml up -d --build
 
 # Start one service only (e.g. just the databases):
-docker compose --env-file .env.dev -f docker-compose.dev.yml up -d postgres qdrant minio
+docker compose --env-file .env.dev -f docker-compose.local.yml up -d postgres qdrant minio
 
-# Run migrations manually (dev-start.sh already does this):
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T backend alembic upgrade head
+# Run migrations manually (local/start.sh and dev/start.sh already do this;
+# prod's backend image runs them automatically on container start):
+docker compose --env-file .env.dev -f docker-compose.local.yml exec -T backend alembic upgrade head
 
 
 STATUS / LOGS
 -------------
-docker compose --env-file .env.dev -f docker-compose.dev.yml ps
-docker compose --env-file .env.dev -f docker-compose.dev.yml logs -f backend
-docker compose --env-file .env.dev -f docker-compose.dev.yml logs -f frontend
-docker compose --env-file .env.dev -f docker-compose.dev.yml logs -f --tail=200
+docker compose --env-file .env.dev -f docker-compose.local.yml ps
+docker compose --env-file .env.dev -f docker-compose.local.yml logs -f backend
+docker compose --env-file .env.dev -f docker-compose.local.yml logs -f frontend
+docker compose --env-file .env.dev -f docker-compose.local.yml logs -f --tail=200
 
 
 STOP
 ----
-# Stop containers, keep volumes (data survives) and networks:
-docker compose --env-file .env.dev -f docker-compose.dev.yml stop
+bash scripts/local/stop.sh   # or scripts/dev/stop.sh / scripts/prod/stop.sh
+# add --wipe to also drop volumes (deletes all data -- Postgres rows, Qdrant
+# vectors, MinIO objects, the tree engine's indexed-tree storage)
 
-# Stop and remove containers + network, keep volumes (data survives):
-docker compose --env-file .env.dev -f docker-compose.dev.yml down
+# Manual equivalent (local), keep volumes:
+docker compose --env-file .env.dev -f docker-compose.local.yml down
+
+# Manual equivalent (local), stop without removing containers:
+docker compose --env-file .env.dev -f docker-compose.local.yml stop
 
 # Restart a single service without touching the others:
-docker compose --env-file .env.dev -f docker-compose.dev.yml restart backend
+docker compose --env-file .env.dev -f docker-compose.local.yml restart backend
 
 
 CLEAR VOLUMES (DESTRUCTIVE — deletes all data)
 -----------------------------------------------
-# Remove containers, network, AND all named volumes (Postgres rows,
-# Qdrant vectors, MinIO objects, and the tree engine's own indexed-tree
-# storage in rag-data). Every uploaded/indexed document is gone after this.
-docker compose --env-file .env.dev -f docker-compose.dev.yml down -v
-
-# Same, but also removes the images so the next `up` rebuilds from scratch:
-docker compose --env-file .env.dev -f docker-compose.dev.yml down -v --rmi local
+# Same as `stop.sh --wipe`, plus also removes the images so the next `up`
+# rebuilds from scratch:
+docker compose --env-file .env.dev -f docker-compose.local.yml down -v --rmi local
 
 # Clear ONE volume instead of everything (stack must be stopped first):
-docker compose --env-file .env.dev -f docker-compose.dev.yml down
+docker compose --env-file .env.dev -f docker-compose.local.yml down
 docker volume rm rag_pgdata          # Postgres (documents table, metadata)
 docker volume rm rag_qdrant-data     # Qdrant (diagram embeddings)
 docker volume rm rag_minio-data      # MinIO (original files + previews)
@@ -79,18 +97,18 @@ docker volume inspect rag_pgdata
 
 FULL RESET (fresh stack, no cache)
 -----------------------------------
-docker compose --env-file .env.dev -f docker-compose.dev.yml down -v --rmi local
-bash scripts/dev-start.sh
+docker compose --env-file .env.dev -f docker-compose.local.yml down -v --rmi local
+bash scripts/local/start.sh
 
 
 SHELL ACCESS
 ------------
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec backend bash
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec frontend sh
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec postgres psql -U rag -d rag_engine
+docker compose --env-file .env.dev -f docker-compose.local.yml exec backend bash
+docker compose --env-file .env.dev -f docker-compose.local.yml exec frontend sh
+docker compose --env-file .env.dev -f docker-compose.local.yml exec postgres psql -U rag -d rag_engine
 
 
 TESTS
 -----
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T backend pytest -q
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T frontend npx tsc --noEmit
+docker compose --env-file .env.dev -f docker-compose.local.yml exec -T backend pytest -q
+docker compose --env-file .env.dev -f docker-compose.local.yml exec -T frontend npx tsc --noEmit

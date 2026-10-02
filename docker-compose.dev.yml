@@ -1,3 +1,20 @@
+# Dev stack, but fronted by nginx + TLS -- for running docker-compose.local.yml's exact
+# setup (self-hosted Postgres/Qdrant/MinIO on Docker volumes, not managed RDS/S3) on a
+# public EC2 (or similar) instance instead of only localhost. docker-compose.local.yml
+# itself stays plain HTTP, no nginx, no certificate -- that's the right default for pure
+# local testing on your own machine, where traffic never leaves the loopback interface
+# and a self-signed cert just adds a per-origin "trust this" click for no real benefit.
+# This file is a complete, standalone stack (not an override of docker-compose.local.yml)
+# so it can be read end to end without cross-referencing two files -- same reasoning
+# docker-compose.prod.yml is its own file rather than an overlay.
+#
+# Run with:
+#   docker compose --env-file .env.dev -f docker-compose.dev.yml up -d --build
+#
+# Needs TLS_CERT_DIR (+ a matching NEXT_PUBLIC_API_BASE_URL / CORS_ORIGINS /
+# S3_PUBLIC_ENDPOINT_URL) set in .env.dev -- see its EC2 TLS section for how to get a
+# real Let's Encrypt cert (or a local self-signed one to test this file before EC2).
+
 services:
   nginx:
     image: nginx:1.27-alpine
@@ -13,7 +30,7 @@ services:
       # container, since only that one directory is mounted). Bind-mounting
       # each file individually resolves the symlink on the host at mount
       # time instead, so the container just sees the real file -- no need to
-      # also mount /etc/letsencrypt/archive. Confirmed working for the local
+      # also mount /etc/letsencrypt/archive. Confirmed working for a local
       # self-signed cert too (plain files, not symlinks -- resolves as a no-op).
       - ${TLS_CERT_DIR:?set TLS_CERT_DIR in .env.dev to a folder with fullchain.pem and privkey.pem}/fullchain.pem:/etc/nginx/certs/fullchain.pem:ro
       - ${TLS_CERT_DIR}/privkey.pem:/etc/nginx/certs/privkey.pem:ro

@@ -78,14 +78,15 @@ flowchart LR
 
 | Service | Technology | Host port | Persistent data |
 |---|---|---:|---|
-| `nginx` | nginx, TLS termination + reverse proxy | `80`, `443` | none (config only) |
-| `frontend` | Node 20, Next.js dev server | internal only | Browser `localStorage`; source bind mount in dev |
-| `backend` | Python 3.12, Uvicorn, FastAPI | internal only | Stateless; tree/page JSON lives in Postgres (`document_trees`) |
-| `postgres` | Postgres 16 | internal only | `pgdata` |
-| `qdrant` | Qdrant | internal only | `qdrant-data` |
-| `minio` | MinIO, S3-compatible object storage | `9000` (API only) | `minio-data` |
+| `frontend` | Node 20, Next.js dev server | `3000` | Browser `localStorage`; source bind mount in dev |
+| `backend` | Python 3.12, Uvicorn, FastAPI | `8000` | Stateless; tree/page JSON lives in Postgres (`document_trees`) |
+| `postgres` | Postgres 16 | `5432` | `pgdata` |
+| `qdrant` | Qdrant | `6333` | `qdrant-data` |
+| `minio` | MinIO, S3-compatible object storage | `9000`; console `9001` | `minio-data` |
 
-nginx is the only public entry point for the app itself (same `infra/nginx/nginx.conf` prod uses — TLS, SSE-aware proxying, rate limiting); `frontend`/`backend`/`postgres`/`qdrant` are reachable only on the Docker-internal network. MinIO's API port is the one deliberate exception: the browser fetches presigned preview URLs from it directly, so it stays published (plain HTTP) rather than proxied through nginx — see `docker-compose.dev.yml`'s `minio` service comment. Its admin console (`9001`) is not published. The definitions are in [`docker-compose.dev.yml`](../docker-compose.dev.yml). The backend creates the configured S3 bucket during FastAPI startup, but database migrations are run separately by [`scripts/dev-start.sh`](../scripts/dev-start.sh), which also checks `TLS_CERT_DIR` has a cert before starting.
+Plain HTTP, no reverse proxy, no TLS certificate — intentional for pure local dev (see `docker-compose.local.yml`'s header comment: traffic never leaves the loopback interface, so there's no real benefit to encryption here, only the cost of a self-signed cert's per-origin browser trust click). The definitions are in [`docker-compose.local.yml`](../docker-compose.local.yml). The backend creates the configured S3 bucket during FastAPI startup, but database migrations are run separately by [`scripts/local/start.sh`](../scripts/local/start.sh).
+
+Deploying this same stack (self-hosted Postgres/Qdrant/MinIO, not managed RDS/S3) to a public EC2 instance instead of only localhost needs real TLS — see [`docker-compose.dev.yml`](../docker-compose.dev.yml), a complete separate stack that adds nginx (the same `infra/nginx/nginx.conf` prod uses — TLS, SSE-aware proxying, rate limiting) in front and moves `frontend`/`backend`/`postgres`/`qdrant` to internal-only. MinIO's API port stays published there too (plain exception, not proxied — the browser fetches presigned preview URLs from it directly, see that file's `minio` service comment), but gets its own TLS cert so that traffic isn't left in plaintext.
 
 ## 4. Technology stack
 
@@ -919,28 +920,34 @@ From the repository root:
 ```bash
 cp .env.dev.example .env.dev
 # Fill in secrets, especially OPENROUTER_API_KEY and production-unsafe defaults.
-# Also set TLS_CERT_DIR -- see .env.dev.example for generating a local
-# self-signed cert (fine for localhost) or a real one via certbot for a domain.
-bash scripts/dev-start.sh
+bash scripts/local/start.sh
 ```
 
-The script checks `TLS_CERT_DIR` has a cert, builds/starts containers, waits for Postgres, and runs:
+The script builds/starts containers, waits for Postgres, and runs:
 
 ```bash
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T backend alembic upgrade head
+docker compose --env-file .env.dev -f docker-compose.local.yml exec -T backend alembic upgrade head
 ```
 
-App (frontend + API, via nginx): `https://localhost` (or your domain on EC2) -- browsers will warn
-on the local self-signed cert, that's expected. `frontend`/`backend` are no longer directly
-published; only `nginx` (80/443) and `minio`'s API port (9000, for browser preview fetches) are.
+Frontend: `http://localhost:3000`  
+Backend: `http://localhost:8000`  
+MinIO console: `http://localhost:9001`
+
+Stop with `bash scripts/local/stop.sh` (add `--wipe` to also drop volumes).
+
+Deploying to a public EC2 instance instead of only localhost? Use `bash scripts/dev/start.sh` /
+`scripts/dev/stop.sh` instead (`docker-compose.dev.yml`, nginx + TLS) -- see that file's header
+comment and `.env.dev.example`'s EC2 section for the extra env vars and a real certificate.
+Deploying to real production (managed RDS/S3)? `bash scripts/prod/start.sh` /
+`scripts/prod/stop.sh` (`docker-compose.prod.yml`, `.env.prod.example`).
 
 ### 23.2 Verification commands
 
 ```bash
-docker compose --env-file .env.dev -f docker-compose.dev.yml ps
-docker compose --env-file .env.dev -f docker-compose.dev.yml logs -f backend
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T backend pytest -q
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T frontend npx tsc --noEmit
+docker compose --env-file .env.dev -f docker-compose.local.yml ps
+docker compose --env-file .env.dev -f docker-compose.local.yml logs -f backend
+docker compose --env-file .env.dev -f docker-compose.local.yml exec -T backend pytest -q
+docker compose --env-file .env.dev -f docker-compose.local.yml exec -T frontend npx tsc --noEmit
 ```
 
 ### 23.3 Backup as one logical system

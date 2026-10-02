@@ -1,0 +1,89 @@
+# Pure local dev -- plain HTTP, no nginx, no TLS certificate needed. Traffic never
+# leaves the loopback interface on your own machine, so there's no real benefit to
+# encryption here, only the cost of a self-signed cert's per-origin browser trust
+# click (confirmed live: this is exactly what broke document preview -- MinIO's
+# presigned URLs are a *separate* origin from the main app, so trusting the app's
+# cert doesn't carry over, and the browser's fetch() for the preview just fails).
+#
+# Deploying this same stack (self-hosted Postgres/Qdrant/MinIO, not managed RDS/S3)
+# to a public EC2 instance instead of only localhost needs real TLS -- use
+# docker-compose.dev.yml for that, a separate complete stack built on top of
+# this one with nginx + a real certificate in front.
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./backend:/app
+      # The tree engine's own storage (app/rag_engine.py) -- the actual
+      # source of truth for every indexed document's tree. Losing this
+      # volume orphans every rag_doc_id in Postgres.
+      - rag-data:/app/.rag-data
+    env_file: .env.dev
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - qdrant
+      - minio
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    env_file: .env.dev
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: rag_engine
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.dev (must match POSTGRES_DSN's password)}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?set QDRANT_API_KEY in .env.dev}
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  minio:
+    # MinIO pulled every minio/minio tag from Docker Hub (Sept 2026) and archived
+    # the open-source repo -- the free community edition is being sunset in favor
+    # of paid AIStor. quay.io/minio/minio (MinIO's own alternate registry per
+    # their own announcement) returns 401 Unauthorized as of this writing --
+    # verified directly, not assumed -- so it is NOT a working fallback right
+    # now despite being widely reported as one. elestio/minio is a third-party
+    # rebuild (not MinIO Inc.), confirmed pullable -- accepted here only because
+    # the official registry path is currently broken; re-evaluate this image
+    # choice once MinIO's distribution situation stabilizes.
+    image: elestio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-rag}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env.dev (must match S3_SECRET_KEY)}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+volumes:
+  pgdata:
+  qdrant-data:
+  minio-data:
+  rag-data:

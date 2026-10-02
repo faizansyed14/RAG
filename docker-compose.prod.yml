@@ -15,7 +15,16 @@ services:
     volumes:
       - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./infra/nginx/proxy_params:/etc/nginx/proxy_params:ro
-      - ${TLS_CERT_DIR:?set TLS_CERT_DIR to a folder with fullchain.pem and privkey.pem}:/etc/nginx/certs:ro
+      # Per-file, not a directory mount: certbot's live/<domain>/*.pem are
+      # symlinks into ../../archive/<domain>/ -- mounting the live/ directory
+      # whole would carry the symlinks in unresolved (dangling inside the
+      # container, since only that one directory is mounted). Bind-mounting
+      # each file individually resolves the symlink on the host at mount
+      # time instead, so the container just sees the real file -- no need to
+      # also mount /etc/letsencrypt/archive. Confirmed for docker-compose.dev.yml;
+      # applied here too since this file has the identical real-certbot scenario.
+      - ${TLS_CERT_DIR:?set TLS_CERT_DIR to a folder with fullchain.pem and privkey.pem}/fullchain.pem:/etc/nginx/certs/fullchain.pem:ro
+      - ${TLS_CERT_DIR}/privkey.pem:/etc/nginx/certs/privkey.pem:ro
     depends_on:
       backend:
         condition: service_healthy
