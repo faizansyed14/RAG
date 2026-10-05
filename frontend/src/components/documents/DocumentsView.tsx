@@ -115,6 +115,7 @@ export function DocumentsView({
   // are admin-only on the server and are neither shown nor requested for them.
   const openDocument = (doc: DocumentOut) => setInspectDoc(doc);
   const [deleting, setDeleting] = useState(false);
+  const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
   const [applyingFolders, setApplyingFolders] = useState(false);
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
   const [deletingFolders, setDeletingFolders] = useState(false);
@@ -177,6 +178,24 @@ export function DocumentsView({
       onIndexed();
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const handleDeleteDocument = async (doc: DocumentOut) => {
+    if (deletingDocId) return;
+    if (!window.confirm(`Delete "${doc.filename}"?`)) return;
+    setDeletingDocId(doc.document_id);
+    try {
+      await deleteDocument(doc.document_id);
+      setSelected((prev) => {
+        if (!prev.has(doc.document_id)) return prev;
+        const next = new Set(prev);
+        next.delete(doc.document_id);
+        return next;
+      });
+      onIndexed();
+    } finally {
+      setDeletingDocId(null);
     }
   };
 
@@ -556,7 +575,7 @@ export function DocumentsView({
                       key={doc.document_id}
                       role="button"
                       tabIndex={0}
-                      className="flex cursor-pointer items-center gap-3 px-3 py-3.5 transition hover:bg-surface sm:px-4"
+                      className="group flex cursor-pointer items-center gap-3 px-3 py-3.5 transition hover:bg-surface sm:px-4"
                       onClick={() => openDocument(doc)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") openDocument(doc);
@@ -591,6 +610,24 @@ export function DocumentsView({
                         {!activeFolder && <FolderChips folderIds={doc.folder_ids} folders={folders} />}
                       </div>
                       <span className="hidden shrink-0 text-xs text-muted sm:inline">{formatDate(doc.created_at)}</span>
+                      {!readOnly && (
+                        <button
+                          type="button"
+                          className="shrink-0 rounded-lg p-1.5 text-muted opacity-0 transition hover:bg-danger-soft hover:text-danger group-hover:opacity-100 disabled:opacity-60"
+                          disabled={deletingDocId === doc.document_id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleDeleteDocument(doc);
+                          }}
+                          aria-label={`Delete ${doc.filename}`}
+                        >
+                          {deletingDocId === doc.document_id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -599,17 +636,39 @@ export function DocumentsView({
               {view === "grid" && filtered.length > 0 && (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
                   {filtered.map((doc) => (
-                    <button
+                    <div
                       key={doc.document_id}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       onClick={() => openDocument(doc)}
-                      className="flex min-h-[150px] flex-col items-start gap-3 rounded-xl border border-border bg-surface-raised p-4 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-border-strong hover:shadow-md"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") openDocument(doc);
+                      }}
+                      className="group relative flex min-h-[150px] cursor-pointer flex-col items-start gap-3 rounded-xl border border-border bg-surface-raised p-4 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-border-strong hover:shadow-md"
                     >
+                      {!readOnly && (
+                        <button
+                          type="button"
+                          className="absolute right-2 top-2 shrink-0 rounded-lg bg-surface-raised p-1.5 text-muted opacity-0 transition hover:bg-danger-soft hover:text-danger group-hover:opacity-100 disabled:opacity-60"
+                          disabled={deletingDocId === doc.document_id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleDeleteDocument(doc);
+                          }}
+                          aria-label={`Delete ${doc.filename}`}
+                        >
+                          {deletingDocId === doc.document_id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      )}
                       <DocIcon docType={doc.doc_type} className="h-6 w-6 text-muted" />
                       <span className="line-clamp-2 text-xs font-medium">{doc.filename}</span>
                       {doc.status !== "indexed" && <StatusBadge status={doc.status} />}
                       {!activeFolder && <FolderChips folderIds={doc.folder_ids} folders={folders} />}
-                    </button>
+                    </div>
                   ))}
                 </div>
               )}

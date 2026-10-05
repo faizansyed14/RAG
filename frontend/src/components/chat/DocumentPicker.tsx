@@ -56,15 +56,16 @@ export function DocumentPicker({ documents, folders, selectedIds, onChange, onUp
     [documents],
   );
 
-  // null = every ready doc (default). Empty array also treated as all.
-  const effectiveIds = useMemo(() => {
-    if (selectedIds == null || selectedIds.length === 0) return readyIds;
-    return selectedIds;
-  }, [selectedIds, readyIds]);
+  // null = every ready doc (default/"all"). An array -- including [] -- is an
+  // explicit choice: [] means "nothing picked yet" (e.g. mid-way through
+  // Deselect all -> pick one), distinct from null/"all". Only null falls back
+  // to readyIds; an explicit empty selection stays empty so "Deselect all"
+  // actually shows 0 checked instead of silently reverting to "all".
+  const effectiveIds = useMemo(() => (selectedIds == null ? readyIds : selectedIds), [selectedIds, readyIds]);
 
-  const allSelected = selectedIds == null || selectedIds.length === 0 || (
-    readyIds.length > 0 && readyIds.every((id) => effectiveIds.includes(id)) && effectiveIds.length === readyIds.length
-  );
+  const allSelected =
+    selectedIds == null ||
+    (readyIds.length > 0 && readyIds.every((id) => effectiveIds.includes(id)) && effectiveIds.length === readyIds.length);
 
   const selected = useMemo(
     () => documents.filter((document) => effectiveIds.includes(document.document_id)),
@@ -79,7 +80,10 @@ export function DocumentPicker({ documents, folders, selectedIds, onChange, onUp
   const readyCount = readyIds.length;
 
   const commit = (ids: string[]) => {
-    if (ids.length === 0 || (readyIds.length > 0 && ids.length === readyIds.length && readyIds.every((id) => ids.includes(id)))) {
+    // Collapse "every ready doc individually picked" down to the canonical
+    // "all" (null) -- but NOT an empty selection, which is its own explicit
+    // state (see effectiveIds above), not a synonym for "all".
+    if (readyIds.length > 0 && ids.length === readyIds.length && readyIds.every((id) => ids.includes(id))) {
       onChange(null);
       return;
     }
@@ -154,17 +158,28 @@ export function DocumentPicker({ documents, folders, selectedIds, onChange, onUp
               <div className="mb-2.5 flex items-start justify-between gap-3">
                 <div>
                   <div className="text-xs font-semibold text-foreground">Sources</div>
-                  <div className="mt-0.5 text-[10px] text-muted">Pick files or use all.</div>
+                  <div className="mt-0.5 text-[10px] text-muted">Pick files, or select/deselect all.</div>
                 </div>
-                {!allSelected && (
-                  <button
-                    type="button"
-                    onClick={() => onChange(null)}
-                    className="shrink-0 text-[10px] font-semibold text-foreground hover:text-foreground"
-                  >
-                    Use all
-                  </button>
-                )}
+                <div className="flex shrink-0 items-center gap-2">
+                  {!allSelected && (
+                    <button
+                      type="button"
+                      onClick={() => onChange(null)}
+                      className="text-[10px] font-semibold text-foreground hover:underline"
+                    >
+                      Select all
+                    </button>
+                  )}
+                  {selected.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => onChange([])}
+                      className="text-[10px] font-semibold text-muted hover:text-foreground hover:underline"
+                    >
+                      Deselect all
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2">
                 <Search className="h-3.5 w-3.5 shrink-0 text-muted" />
