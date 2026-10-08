@@ -13,7 +13,7 @@
        ┌─────────────┼──────────────┐
        │             │              │
        ↓             ↓              ↓
-browse_documents  structure     page_content
+browse / search   structure     page_content
        │             │              │
        └─────────────┼──────────────┘
                      ↓
@@ -139,6 +139,8 @@ The current example configuration is:
 | `MODEL_VISION` | `qwen/qwen3-vl-235b-a22b-instruct` | Page OCR/description and query-time visual verification |
 | `MODEL_EMBEDDING` | `openai/text-embedding-3-small` | Diagram description and query vectors |
 | `MODEL_EMBEDDING_DIMENSION` | `1536` | Qdrant vector size; must match the embedding output |
+| `RAG_CHAT_REASONING_EFFORT` (optional) | unset | How hard the chat model reasons (`minimal`/`low`/`medium`/`high`). Unset sends nothing, so the model's own default applies — the accuracy-first default. `low` cut latency ~39% and cost ~31% on an 11-document library with no accuracy change, but was never measured at scale, so it is opt-in. |
+| `RAG_CHAT_MAX_TURNS` (optional) | `16` | Model turns one answer may take. The engine's own default (10) ran out on a 1,011-document library while the agent searched. |
 
 Always confirm the active deployment environment. At audit time, [`docs/MODELS.md`](MODELS.md) and [`docs/PROMPTS.md`](PROMPTS.md) still described `RAG_CHAT_MODEL` as `openai/gpt-4o-mini`, while `.env.dev` and `.env.dev.example` use `openai/gpt-5-mini`.
 
@@ -200,6 +202,7 @@ Do not interchange `document_id` and `rag_doc_id`. The former is used for Postgr
 |---|---|---|
 | Postgres (application tables) | Document metadata/status/hash; `rag_doc_id`; diagram OCR/caption/description; Qdrant point pointer; flat folders and memberships | Vector values, binary files, chat history |
 | Postgres (`document_trees` table) | PageIndex `doc.json`/`tree.json`/`pages.json` equivalent, one row per document keyed by `rag_doc_id` | Original binary, diagram vectors |
+| Postgres (`document_pages` table) | A derived, full-text-indexed copy of each page (one row per page) for the `search_content` tool; rebuildable from `document_trees` | Anything that isn't also in `document_trees`; it is an index, not a source of truth |
 | MinIO/S3 | Original upload; rendered non-PDF preview; scanned-page PNGs | Search tree, relational metadata, chat sessions |
 | Qdrant | One vector and payload per scanned/visual page | Ordinary text-page or tree-node embeddings |
 | Browser `localStorage` | Auth token, up to 50 chat sessions, selected document IDs, theme, preview width | Server-authoritative documents or indexes |
@@ -211,6 +214,7 @@ Do not interchange `document_id` and `rag_doc_id`. The former is used for Postgr
 - `folders`: flat named groups. There is no parent/child folder hierarchy.
 - `document_folders`: many-to-many join table. Folders behave like labels: a document can belong to zero, one, or many folders.
 - `document_trees`: one row per document, keyed by `rag_doc_id` (not `document_id`). Holds the PageIndex engine's own `meta`/`tree`/`pages` JSON (see §11.4). Written and read only through `rag_core/postgres_store.py`'s `PostgresDocStore`, never joined against directly by application queries.
+- `document_pages`: one row per page of `document_trees.pages`, with a stored full-text `tsvector` and a GIN index (see §11.5). Maintained by `PostgresDocStore.save_document` in the same transaction as the tree row; removed with its document by `ON DELETE CASCADE`.
 
 ## 7. Upload-to-index flow
 
@@ -446,6 +450,27 @@ PageIndex's own knowledge structure is persisted as one row per document in Post
 
 This is not a cache. Losing this table leaves valid `documents` rows whose `rag_doc_id` points to missing content — the same failure mode the old `rag-data` volume had, just on a store that now gets backed up alongside the rest of Postgres. Raw binary files (originals, rendered previews, diagram page PNGs) are unaffected — they remain in MinIO/S3 regardless of this table's state. A single global Postgres advisory lock (`pg_advisory_lock`, one fixed key) replaces the old file-based mutex around the check-then-write name-uniqueness race in `submit_document`.
 
+### 11.5 Search over stored text: document search and page search
+
+Two keyword (lexical, not semantic) searches run in Postgres full-text search; neither uses embeddings or an LLM.
+
+| | Document search | Page search |
+|---|---|---|
+| Used by | `browse_documents(query=...)` | `search_content(query)` |
+| Index | `document_trees.search_vector`, maintained by a trigger (migration `0008`) | `document_pages.text_tsv`, a generated stored column (migration `0011`) |
+| Covers | document name (A), description (B), top-level section titles (C) | page text (A), document name (B), description (C) |
+| Finds | a document by what it is called or about | a fact by what a page says (a record ID, a name, a figure) |
+| Index type | GIN | GIN |
+
+- **All words first, then any word.** Both searches run `plainto_tsquery` (every word must match) first and fall back to matching any word only if that finds nothing. Measured on a 1,011-document library, the all-words query alone returned nothing for every sentence-style question; the fallback is what makes them findable, and trying all-words first keeps precise queries from being diluted.
+- **File extensions are stripped from names** before indexing (Postgres tokenizes `name.pdf` as one opaque token otherwise).
+- **`document_pages` is derived data.** `save_document` refreshes it inside a savepoint: a failure rolls back only the index rows and logs a warning, never the document, so an ingest cannot fail because the search index could not be updated. `scripts/eval_retrieval.py` reports any document whose pages are not fully indexed. Migration `0011` backfills existing documents with plain SQL (no LLM calls).
+- **One enormous page cannot break indexing:** a `tsvector` is capped at 1 MB, so the generated column indexes only the first 200,000 characters of a page; the full text is still stored.
+- **Page search is scoped** to the chat's selected documents (`_allowed_ids`), like every tool.
+- **Why both.** Document search cannot see inside pages (identifier questions found 0% of the time), and page search alone cannot tell apart many near-identical documents from different projects (project-named questions found the right page in the top 5 only 12% of the time at 1,011 documents); the agent narrows by project with document search, then searches pages. Neither finds a page that shares no words with the question — that is the gap a vector index would fill (§24).
+
+Measured with `scripts/eval_retrieval.py` on the real library plus 1,000 synthetic near-copies (11 → 1,011 documents, 2,580 pages), page search placed the right page first for 100% of 18 identifier questions at both sizes, with a median latency of 8 ms (p95 54 ms) at 1,011 documents; un-indexed, the same query took 1.3–1.9 s and grew linearly with page count.
+
 ## 12. Chat-to-response flow
 
 ### 12.1 Sequence
@@ -505,6 +530,7 @@ The frontend sends:
 - It maps application UUIDs to PageIndex `rag_doc_id` values.
 - The exact allowed PageIndex IDs are also enforced inside local tools, not only mentioned in a prompt.
 - Folder selection in the frontend is converted into a list of document UUIDs. The local PageIndex agent itself has no Postgres-folder awareness.
+- **The first message names the scope, and its size is bounded.** Up to 25 selected documents it lists each document's metadata (~130 tokens each). Above that it is a short constant-size notice (~90 tokens: how many documents are in scope, that the tools are restricted to them, and to find them with `search_content()` / `browse_documents(query=...)`). Per-document metadata is re-sent on every model turn, so before this limit chat cost grew linearly with the library: measured ~65k tokens per turn at 500 documents and ~132k at 1,011 (about 10× the cost per question), overflowing a 400k context near 3,000 documents. The limit is `TARGETING_FULL_BLOCK_MAX` in `agent_tools.py`; scoping itself is unaffected because the tool layer enforces the allowlist regardless of the prompt.
 
 ### 12.3 Conversation memory
 
@@ -583,7 +609,8 @@ There is no network MCP server in this application's active path. The vendored l
 
 | Tool | Key inputs | What it reads | Important behavior |
 |---|---|---|---|
-| `browse_documents` | `offset`, `limit` | `document_trees.meta` across all rows | Newest first, up to 50. Local schemas hide folder and semantic-relevance options. |
+| `browse_documents` | `query` (optional), `offset`, `limit` | `document_trees.meta`; with `query`, `document_trees.search_vector` | With `query`: keyword-ranked by name/description/section titles (all words first, then any word). Without: newest first, up to 50. Local schemas hide `folder_id`, `recursive` and `sort`. Does not look inside pages. |
+| `search_content` | `query`, `limit` (1–20) | `document_pages` (page text, name, description) | Full-text search over page text, scoped to the selected documents. Returns `{document, page, snippet}`; says whether all words or only any word matched. Discovery only: snippets are leads, not evidence, so it is deliberately in neither guardrail tool set and an answer still requires `get_page_content`. |
 | `get_document` | `doc_name`, optional wait flag | One `document_trees.meta` record | Returns status, description, page count, and next-step guidance. |
 | `get_document_structure` | `doc_name`, `part` | `document_trees.tree` | Returns title/summary hierarchy; paginates large JSON below about 95% of a 100,000-character tool limit. |
 | `get_page_content` | `doc_name`, `pages` | `document_trees.pages` | Accepts forms like `5`, `3,7,10`, `5-10`, `1-3,7`; trims output to the same character budget. |
@@ -599,7 +626,9 @@ The managed prompt combines:
 - a document-assistant identity and no-process-narration rule;
 - a structure-first rule for documents over 20 pages;
 - direct page reading for small documents;
-- browse/paginate persistence before declaring a document missing;
+- discovery guidance: `search_content` first for a specific fact or identifier, `browse_documents(query)` to narrow to a project or topic;
+- search/paginate persistence before declaring a document missing (page through the whole library only when it is small; for a large one, repeat differently-worded searches);
+- search discipline for large libraries: at least two differently-worded searches before concluding absence, check the project/entity named in the question against each candidate (similar documents exist for different projects), never mix facts across projects, and name the document and project in the answer;
 - evidence checks for exact identifiers, dates, rows, and calculations;
 - multilingual evidence guidance;
 - grounding and citation rules;
@@ -905,8 +934,9 @@ Deleting a folder only deletes membership rows. Documents and their indexes rema
 
 ### 22.3 Chat query
 
-- One to several chat-model turns, up to the runner's turn limit.
+- One to several chat-model turns, up to the runner's turn limit (`RAG_CHAT_MAX_TURNS`, default 16).
 - Each tool round causes another model turn.
+- Measured at default reasoning effort on a 1,011-document library: 2–6 tool calls, 20–28 s, 11k–37k input tokens and about $0.005–0.006 per question with `openai/gpt-5-mini` (token counts priced at OpenRouter's list rates, cached input at the cached rate). Before the constant-size scope notice (§12.2) the same questions sent 440k–1.4M input tokens and cost $0.05–0.07.
 - A visual-trigger query adds one embedding request and up to five concurrent vision verification calls.
 
 There is no application-level token, document-size, spend, or rate quota beyond tool response character limits, vision concurrency, and agent turn limits.
@@ -948,6 +978,8 @@ docker compose --env-file .env.dev -f docker-compose.local.yml ps
 docker compose --env-file .env.dev -f docker-compose.local.yml logs -f backend
 docker compose --env-file .env.dev -f docker-compose.local.yml exec -T backend pytest -q
 docker compose --env-file .env.dev -f docker-compose.local.yml exec -T frontend npx tsc --noEmit
+# retrieval recall check (SQL only, no LLM calls): is the right page still in the top results as the library grows?
+docker compose --env-file .env.dev -f docker-compose.local.yml exec -T backend python -m scripts.eval_retrieval
 ```
 
 ### 23.3 Backup as one logical system
@@ -964,7 +996,7 @@ Backing up only the application tables' logical subset of Postgres and skipping 
 
 These are descriptions of current behavior, not claims that the system is broken.
 
-1. **No general text embeddings.** Normal text retrieval is entirely agentic tree/page reading.
+1. **No general text embeddings; text search is lexical.** Normal text retrieval is agentic tree/page reading, found through keyword (full-text) search over documents and pages (§11.5). A page that shares no words with the question can be missed; a vector leg would fill that gap but is not built — add it only if `scripts/eval_retrieval.py` shows paraphrase misses (it would be added as a union with the keyword results, not a ranked fusion: rank fusion pushed good keyword hits out on near-duplicate documents in testing).
 2. **Visual coverage depends on document classification.** Embedded diagrams inside an otherwise text-heavy PDF are not vector-indexed.
 3. **English keyword gate for visual search.** Relevant visual questions can miss the Qdrant path.
 4. **In-process ingestion jobs.** Restarts can strand documents and there is no retry/recovery queue.
@@ -1022,6 +1054,8 @@ This repository routes these SDK-shaped calls through OpenRouter, so provider su
 | Local tree API/store | [`backend/app/rag_core/local_api.py`](../backend/app/rag_core/local_api.py), [`local_store.py`](../backend/app/rag_core/local_store.py) |
 | Agent construction/stream | [`backend/app/rag_core/local_chat.py`](../backend/app/rag_core/local_chat.py) |
 | Tool definitions | [`backend/app/rag_core/agent_tools.py`](../backend/app/rag_core/agent_tools.py) |
+| Tree/page store and keyword search | [`backend/app/rag_core/postgres_store.py`](../backend/app/rag_core/postgres_store.py), migrations [`0008`](../backend/alembic/versions/0008_document_trees_search.py) and [`0011`](../backend/alembic/versions/0011_document_pages.py) |
+| Retrieval recall check | [`backend/scripts/eval_retrieval.py`](../backend/scripts/eval_retrieval.py), [`retrieval_golden.json`](../backend/scripts/retrieval_golden.json) |
 | Agents SDK tool adapter | [`backend/app/rag_core/integrations/openai_agents.py`](../backend/app/rag_core/integrations/openai_agents.py) |
 | Chat orchestration | [`backend/app/retrieval/chat_service.py`](../backend/app/retrieval/chat_service.py) |
 | Embedding and Qdrant | [`backend/app/retrieval/embeddings.py`](../backend/app/retrieval/embeddings.py), [`vector_store.py`](../backend/app/retrieval/vector_store.py) |

@@ -73,10 +73,18 @@ async def chat(
         audit("chat_screened", user=user.username, verdict=verdict, ip=client_ip(request))
         return StreamingResponse(_canned_stream(canned, user), media_type="text/event-stream", headers=_SSE_HEADERS)
 
+    # None means "no selection made: every indexed document"; an EMPTY list is an explicit choice of
+    # nothing ("Deselect all"). Treating [] as falsy used to widen it to the whole library, so a user
+    # who deselected everything was still being answered from every document. Rejected before any
+    # credit is reserved, like every other 400 here.
+    if body.document_ids is not None and not body.document_ids:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "No documents selected. Select at least one document to search."
+        )
     query = select(Document.document_id, Document.rag_doc_id).where(
         Document.status == "indexed", Document.rag_doc_id.is_not(None)
     )
-    if body.document_ids:
+    if body.document_ids is not None:
         query = query.where(Document.document_id.in_(body.document_ids))
     rows = (await session.execute(query)).all()
     if not rows:
@@ -96,7 +104,7 @@ async def chat(
             )
         )
     ).all()
-    if body.document_ids:
+    if body.document_ids is not None:
         id_set = {str(i) for i in body.document_ids}
         name_rows = [r for r in name_rows if str(r.document_id) in id_set]
     document_id_by_name = {r.filename: str(r.document_id) for r in name_rows}

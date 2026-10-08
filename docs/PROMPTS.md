@@ -310,21 +310,23 @@ TOOL USAGE RULES:
 - If a tool returns an error, present the provided next_steps/options to the user instead of retrying blindly."""
 ```
 
-`_DISCOVERY` -- `agent_tools.py:1597-1599`:
+`_DISCOVERY` -- `agent_tools.py:1758-1761`:
 
 ```python
 _DISCOVERY = """\
 DOCUMENT DISCOVERY:
-- browse_documents() — DEFAULT discovery tool, first choice for any document-related question. The bare call returns your documents newest first with names and descriptions; match them against the user's intent."""
+- search_content(query) — FIRST choice for any question about a specific fact: a record, drawing or RFI number, a name, a figure, a distinctive phrase. It searches the PAGES of all your documents and returns document names, page numbers and snippets. Put only the distinctive words in the query.
+- browse_documents(query) — finds documents by name, description and section titles. Use it to narrow to the right project, entity or topic when several documents look alike, and for "what do I have" questions (the bare call lists your documents newest first with names and descriptions)."""
 ```
 
-`_DECISION` -- `agent_tools.py:1601-1604`:
+`_DECISION` -- `agent_tools.py:1763-1767`:
 
 ```python
 _DECISION = """\
 DECISION:
 - "What do I have / list / recent" → browse_documents()
-- ANY question that needs a document to answer (including "find THE paper about Y") → browse_documents(), then pick the documents whose name/description matches the question"""
+- A specific fact, identifier or figure → search_content(), then read the best-matching pages with get_page_content()
+- A topic, a project, or "find THE paper about Y" → browse_documents(query=...) with the distinctive words, then pick the documents whose name/description matches the question"""
 ```
 
 `_AFTER_DISCOVERY` -- `agent_tools.py:1606-1609`:
@@ -336,16 +338,27 @@ _AFTER_DISCOVERY = """\
 - Results returned ≠ correct results. If the returned documents do not clearly match the user's intent (e.g., wrong topic, wrong time period, wrong document type), treat it the same as "not found" and continue the PERSISTENCE protocol below."""
 ```
 
-`_PERSISTENCE` -- `agent_tools.py:1611-1617`:
+`_PERSISTENCE` -- `agent_tools.py:1774-1780`:
 
 ```python
 _PERSISTENCE = """\
 PERSISTENCE (before concluding the target document is not in the library):
 This protocol applies both when results are empty AND when results are returned but none match the user's intent. Do NOT give up after a single discovery attempt. Follow these steps in order:
-1. browse_documents() and compare every returned name/description against the user's intent
-2. Rephrase the query with synonyms or alternative terms and browse again
-3. Page through the ENTIRE library with `limit: 50` and `offset: next_offset` until has_more is false — MANDATORY, must be completed before concluding "not found"
+1. search_content() for the distinctive words, and browse_documents(query=...) for the project or topic; compare every returned name/description/snippet against the user's intent
+2. Rephrase the query with synonyms, alternative spellings or different distinctive words and search again
+3. Small library (has_more is false after a page or two): page through the ENTIRE library with `limit: 50` and `offset: next_offset` until has_more is false — MANDATORY, must be completed before concluding "not found". Large library (many pages of has_more): repeat steps 1-2 with at least two further, differently-worded queries instead of paging through every document.
 Only after ALL steps have been tried may you conclude the document is not in the library. Do NOT fall back to general knowledge — if the user's question references their own documents, exhaust every discovery path first."""
+```
+
+`_SEARCH_DISCIPLINE` -- `agent_tools.py:1782-1787`, added on top of the vendored instruction set after a 1,011-document scale test showed near-identical documents for different projects and agents that gave up or mixed projects (see ARCHITECTURE.md §11.5):
+
+```python
+_SEARCH_DISCIPLINE = """\
+SEARCH DISCIPLINE (large libraries):
+- Run at least two differently-worded searches (different distinctive words) before concluding that something is absent or that a document does not exist.
+- Several documents can look alike — the same document type for different projects, towers or phases. Take the project or entity named in the question and check it against each candidate's name, description or page text before using it. Never mix facts from different projects.
+- If the same identifier or figure appears in more than one project's documents, say so and report each one with its project instead of picking one.
+- In the answer, name the document and project the facts came from."""
 ```
 
 `_EVIDENCE_REASONING` -- `agent_tools.py`, added on top of the vendored
@@ -377,6 +390,7 @@ AGENT_INSTRUCTIONS = "\n\n".join([
     _DECISION,
     _AFTER_DISCOVERY,
     _PERSISTENCE,
+    _SEARCH_DISCIPLINE,
     _EVIDENCE_REASONING,
 ])
 ```
@@ -404,11 +418,32 @@ CITATIONS
 the same dict but is never selected by this app -- included in §3 for
 completeness since it lives in the same reachable file.)
 
-#### 2.2.6 Document-targeting context -- `app/rag_core/agent_tools.py:1723-1728` (`doc_targeting_block`)
+#### 2.2.6 Document-targeting context -- `app/rag_core/agent_tools.py:1889-1951` (`doc_targeting_block`)
 
-Not a template with instructional text -- pure data injection, prepended
-as the **first user message** (not the system prompt) whenever a chat call
-passes `doc_id`. Exact code:
+Prepended as the **first user message** (not the system prompt) whenever a chat call
+passes `doc_id`. Up to `TARGETING_FULL_BLOCK_MAX` (25) selected documents it is pure data
+injection -- every document's metadata. Above that it is a short constant-size notice, because
+per-document metadata (~130 tokens each) is re-sent on every model turn: measured ~65k tokens
+per turn at 500 documents and ~132k at 1,011. Tool-layer scoping is unaffected. Exact code:
+
+```python
+    if len(doc_ids) > TARGETING_FULL_BLOCK_MAX:
+        return _compact_targeting_block(client, doc_ids)
+```
+
+The compact notice (`_compact_targeting_block`), after it confirms every selected id exists:
+
+```python
+    return (
+        f"The user has specified {len(doc_ids)} documents.\n"
+        "Every tool is restricted to exactly these documents; no other document exists for "
+        "this conversation. They are not listed here because there are many: find the relevant "
+        "ones with search_content() (a specific fact or identifier) or browse_documents(query=...) "
+        "(a project, entity or topic), then read them with get_page_content()."
+    )
+```
+
+The full-metadata form (25 documents or fewer):
 
 ```python
     if len(details) == 1:

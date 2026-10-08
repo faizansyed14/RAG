@@ -393,6 +393,13 @@ class LocalAPI:
             "offset": offset,
         }
 
+    def search_pages(self, query: str, limit: int = 8, doc_ids=None) -> dict[str, Any]:
+        """Full-text search over document *pages* -- see postgres_store.py::search_pages."""
+        if limit < 1 or limit > 100:
+            raise ValueError("limit must be between 1 and 100")
+        results, match = self._store.search_pages(query.strip(), limit, doc_ids=doc_ids)
+        return {"results": results, "match": match}
+
 
 def _format_tree_node(node: dict, node_summary: bool) -> dict:
     children = node.get("nodes") or []

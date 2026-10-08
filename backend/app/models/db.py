@@ -8,7 +8,7 @@ the two.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Text, text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -169,6 +169,25 @@ class DocumentTree(Base):
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+
+
+class DocumentPage(Base):
+    """One row per page of document_trees.pages, full-text indexed so the agent's search_content
+    tool can find a fact by what a page says, not only by what its document is called. Written by
+    PostgresDocStore.save_document in the same transaction as the tree row; removed with its
+    document by the foreign key's ON DELETE CASCADE. See alembic/versions/0011_document_pages.py."""
+
+    __tablename__ = "document_pages"
+
+    doc_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("document_trees.doc_id", ondelete="CASCADE"), primary_key=True
+    )
+    page_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    doc_name: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    doc_description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    text: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    # GENERATED ALWAYS AS ... STORED in the migration -- never written from Python.
+    text_tsv: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
 
 
 class RateLimit(Base):

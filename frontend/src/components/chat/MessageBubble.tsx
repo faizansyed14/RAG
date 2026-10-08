@@ -19,6 +19,7 @@ interface Props {
 
 const TOOL_LABELS: Record<string, string> = {
   browse_documents: "Browsing documents",
+  search_content: "Searching page text",
   get_document: "Opening a document",
   get_document_structure: "Reading structure",
   get_page_content: "Reading pages",

@@ -64,7 +64,7 @@ _BLOCK_PATTERNS = [
         r"\b(reveal|show|print|repeat|display|output|leak|dump|expose|recite|tell me|give me)\b[^.?!\n]{0,30}\b(your|the|ur)\b[^.?!\n]{0,20}\b(system prompt|system message|initial prompt|hidden prompt|pre-?prompt|developer message)",
         r"\b(reveal|show|print|repeat|display|output|leak|dump|expose|recite|tell me|give me|what (is|are))\b[^.?!\n]{0,25}\byour (instructions|rules|guidelines|programming|configuration|initial prompt)",
         r"\bsystem prompt\b",
-        r"\b(browse_documents|get_page_content|get_document_structure|get_document|remove_document)\b",
+        r"\b(browse_documents|search_content|get_page_content|get_document_structure|get_document|remove_document)\b",
         # fake role / chat-template markers
         r"<\|im_(start|end)\|>",
         r"\[/?inst\]",
@@ -76,7 +76,7 @@ _BLOCK_PATTERNS = [
 _LEAK_PATTERNS = [
     re.compile(p)
     for p in (
-        r"\b(browse_documents|get_page_content|get_document_structure|get_document|remove_document)\b",
+        r"\b(browse_documents|search_content|get_page_content|get_document_structure|get_document|remove_document)\b",
         r"document-focused assistant",
         r"never narrate your own process",
         r"my (system )?(prompt|instructions) (say|says|state|states|tell|tells)",

@@ -19,6 +19,7 @@ engine, separate from models/db.py's async one.
 from __future__ import annotations
 
 import json
+import logging
 import zlib
 from contextlib import contextmanager
 from functools import lru_cache
@@ -26,6 +27,17 @@ from functools import lru_cache
 from sqlalchemy import create_engine, text
 
 from app.core.config import get_settings
+
+log = logging.getLogger(__name__)
+
+# Exact match first, then -- only if that found nothing -- any-term match. plainto_tsquery ANDs
+# every word, which is what you want for "SUB-084 review status" but returns nothing for a
+# sentence-style question; measured on a 1,011-document library: AND found nothing for all 8
+# project-named questions and 2 of 11 identifier questions, and the any-term fallback is what
+# rescued those 2 (see docs/ARCHITECTURE.md, "Retrieval at scale").
+_TSQUERY_ALL = "plainto_tsquery('english', :query)"
+_TSQUERY_ANY = "replace(plainto_tsquery('english', :query)::text, '&', '|')::tsquery"
+_MATCH_MODES = (("all terms", _TSQUERY_ALL), ("any term", _TSQUERY_ANY))
 
 # One fixed key for the single global mutex DocStore.lock() provided (confirmed: one call
 # site, local_api.py's submit_document, guarding the check-then-write name-uniqueness race --
@@ -77,6 +89,42 @@ class PostgresDocStore:
                     "pages": json.dumps(_strip_nul(pages)),
                 },
             )
+            # The page-level search index is derived data: inside a SAVEPOINT, so a failure here
+            # rolls back only the index rows and never the document itself -- an ingest must not
+            # fail because search_content's index could not be refreshed. The document stays
+            # readable either way; scripts/eval_retrieval.py reports any document left unindexed.
+            try:
+                with conn.begin_nested():
+                    self._index_pages(conn, doc_id, meta, pages)
+            except Exception:  # noqa: BLE001
+                log.warning("page search index not updated for %s", doc_id, exc_info=True)
+
+    @staticmethod
+    def _index_pages(conn, doc_id: str, meta: dict, pages: list) -> None:
+        conn.execute(text("DELETE FROM document_pages WHERE doc_id = :doc_id"), {"doc_id": doc_id})
+        name = _strip_nul(str(meta.get("name") or ""))
+        description = _strip_nul(str(meta.get("description") or ""))
+        rows = []
+        for position, page in enumerate(pages or [], start=1):
+            if not isinstance(page, dict):
+                continue
+            rows.append({
+                "doc_id": doc_id,
+                "page_index": int(page.get("page_index") or position),
+                "doc_name": name,
+                "doc_description": description,
+                "text": _strip_nul(str(page.get("markdown") or "")),
+            })
+        if rows:
+            conn.execute(
+                text(
+                    "INSERT INTO document_pages (doc_id, page_index, doc_name, doc_description, text) "
+                    "VALUES (:doc_id, :page_index, :doc_name, :doc_description, :text) "
+                    "ON CONFLICT (doc_id, page_index) DO UPDATE SET doc_name = EXCLUDED.doc_name, "
+                    "doc_description = EXCLUDED.doc_description, text = EXCLUDED.text"
+                ),
+                rows,
+            )
 
     def get_meta(self, doc_id: str) -> dict | None:
         return self._get_column(doc_id, "meta")
@@ -108,24 +156,57 @@ class PostgresDocStore:
         Lexical, not semantic: no embeddings involved. `doc_ids`, when given, scopes the search
         the same way chat's selected-document scope does (see agent_tools.py's _allowed_ids)."""
         params: dict = {"query": query, "limit": limit, "offset": offset}
-        where = "search_vector @@ plainto_tsquery('english', :query)"
+        scope = ""
         if doc_ids is not None:
-            where += " AND doc_id = ANY(:doc_ids)"
+            scope = " AND doc_id = ANY(:doc_ids)"
             params["doc_ids"] = list(doc_ids)
 
         with _engine().connect() as conn:
-            total = conn.execute(
-                text(f"SELECT count(*) FROM document_trees WHERE {where}"), params
-            ).scalar_one()
-            rows = conn.execute(
-                text(
-                    f"SELECT meta FROM document_trees WHERE {where} "
-                    "ORDER BY ts_rank(search_vector, plainto_tsquery('english', :query)) DESC "
-                    "LIMIT :limit OFFSET :offset"
-                ),
-                params,
-            ).all()
-        return [row[0] for row in rows], total
+            # All-terms match first; the any-term fallback only runs when that finds nothing, so a
+            # precise query is never diluted but a sentence-style one still finds its documents.
+            for _mode, tsquery in _MATCH_MODES:
+                where = f"search_vector @@ {tsquery}{scope}"
+                total = conn.execute(
+                    text(f"SELECT count(*) FROM document_trees WHERE {where}"), params
+                ).scalar_one()
+                if total:
+                    rows = conn.execute(
+                        text(
+                            f"SELECT meta FROM document_trees WHERE {where} "
+                            f"ORDER BY ts_rank(search_vector, {tsquery}) DESC "
+                            "LIMIT :limit OFFSET :offset"
+                        ),
+                        params,
+                    ).all()
+                    return [row[0] for row in rows], total
+        return [], 0
+
+    def search_pages(self, query: str, limit: int = 8, doc_ids=None) -> tuple[list[dict], str]:
+        """Full-text search over the *pages* of every document (document_pages -- see
+        alembic/versions/0011_document_pages.py): the one search that can find a fact by what a page
+        says. Same all-terms-then-any-term cascade as search_metas. `doc_ids`, when given, scopes it
+        the way chat's selected-document scope does (see agent_tools.py's _allowed_ids). Returns
+        ([{doc_id, name, page, text}], match_mode) with match_mode "all terms", "any term" or
+        "no match"; lexical, not semantic -- no embeddings involved."""
+        params: dict = {"query": query, "limit": limit}
+        scope = ""
+        if doc_ids is not None:
+            scope = " AND dp.doc_id = ANY(:doc_ids)"
+            params["doc_ids"] = list(doc_ids)
+        with _engine().connect() as conn:
+            for mode, tsquery in _MATCH_MODES:
+                rows = conn.execute(
+                    text(
+                        "SELECT dp.doc_id, dp.doc_name, dp.page_index, dp.text "
+                        f"FROM document_pages dp WHERE dp.text_tsv @@ {tsquery}{scope} "
+                        f"ORDER BY ts_rank_cd(dp.text_tsv, {tsquery}) DESC, dp.doc_id, dp.page_index "
+                        "LIMIT :limit"
+                    ),
+                    params,
+                ).all()
+                if rows:
+                    return ([{"doc_id": r[0], "name": r[1], "page": r[2], "text": r[3]} for r in rows], mode)
+        return [], "no match"
 
     def delete_document(self, doc_id: str) -> bool:
         with _engine().begin() as conn:

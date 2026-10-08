@@ -300,10 +300,47 @@ TOOL_CONTRACT: dict[str, dict[str, Any]] = {
             "required": ["doc_names"],
         },
     },
+    # Not part of the cloud MCP contract -- added for the local store (see
+    # postgres_store.py::search_pages). Local-only, like the browse `query` below.
+    "search_content": {
+        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "description": (
+            "Full-text search over the PAGES of your documents, not just their "
+            "names. Use it first for any question about a specific fact: a "
+            "record, drawing or RFI number (SUB-084, RFI-062, A-109), a name, "
+            "a figure or a distinctive phrase. It matches every word first and "
+            "falls back to matching any word only if nothing matches, so put "
+            "only the distinctive words in the query. Returns matching "
+            "document names, page numbers and a snippet of each page. Snippets "
+            "are leads, not evidence: read the best pages with "
+            "get_page_content() before answering."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": (
+                        "The distinctive words to look for: record IDs, "
+                        "project or entity names, subject terms."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 8,
+                    "description": "Maximum pages to return (1-20, default 8).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 }
 
-_READ_TOOLS = ("browse_documents", "get_document", "get_document_structure",
-               "get_page_content")
+_READ_TOOLS = ("browse_documents", "search_content", "get_document",
+               "get_document_structure", "get_page_content")
 _MANAGEMENT_TOOLS = ("remove_document",)
 
 
@@ -334,6 +371,9 @@ def _dumps(payload: dict[str, Any]) -> str:
 
 # ── document listing / name resolution ──
 
+_SWEEP_PAGE_SIZE = 1000
+
+
 def _all_documents(client, stop_ids=None) -> list[dict[str, Any]]:
     """Every document the client can list, newest first (both modes list
     newest-first; paging preserves that order). With ``stop_ids``, paging
@@ -344,7 +384,10 @@ def _all_documents(client, stop_ids=None) -> list[dict[str, Any]]:
     offset = 0
     remaining = {str(one_id) for one_id in stop_ids} if stop_ids else None
     while True:
-        page = client.list_documents(limit=100, offset=offset)
+        # Each local listing call reads every document's metadata, so the page size sets how
+        # many full reads a sweep costs: 100 per page was ~11 reads at 1,011 documents on every
+        # get_page_content/get_document call, and grows quadratically with the library.
+        page = client.list_documents(limit=_SWEEP_PAGE_SIZE, offset=offset)
         batch = page.get("documents") or []
         documents.extend(batch)
         if remaining is not None:
@@ -812,8 +855,10 @@ def _browse_documents(client, folder_id: str = "root", recursive: bool = False,
                     "document phrased very differently from the query can be "
                     "missed even though it exists.",
                     "Retry with different/broader keywords",
-                    'Or call browse_documents() with sort="time" (no query) to '
-                    "page through the full library instead",
+                    "Facts that live inside a page rather than in a document's "
+                    "name or description are found with search_content(), not here",
+                    "Or call browse_documents() without `query` to page "
+                    "through the full library instead",
                 ],
             }
         else:
@@ -859,6 +904,82 @@ def _browse_documents(client, folder_id: str = "root", recursive: bool = False,
                + (" (more available)" if has_more else "")
                if items else "Nothing to show")
     return _success(data, {"summary": summary, "options": options})
+
+
+# A record-ID-shaped token: SUB-084, FCL-LTR-0142, A1209, RFI-062 -- letters, optional -LETTERS
+# groups, then 2+ digits. Looked for first when cutting a snippet, since an ID is the thing the
+# reader is hunting for; plain words come second.
+_ID_TOKEN = re.compile(r"[A-Za-z]{1,5}(?:-[A-Za-z]{2,5})*-?\d{2,}[A-Za-z0-9]*")
+_WORD_TOKEN = re.compile(r"[A-Za-z]{4,}")
+_SNIPPET_RADIUS = 140
+
+
+def _snippet(page_text: str, query: str) -> str:
+    """A short window of the page around the first place the query's ID-shaped tokens, then its
+    plain words, appear -- or the page's opening if none can be located (the match may have been
+    on the document's name/description rather than the text)."""
+    flat = " ".join(str(page_text or "").split())
+    for token in _ID_TOKEN.findall(query) + _WORD_TOKEN.findall(query):
+        found = re.search(re.escape(token), flat, re.IGNORECASE)
+        if found:
+            start = max(found.start() - _SNIPPET_RADIUS, 0)
+            end = found.end() + _SNIPPET_RADIUS
+            return ("…" if start else "") + flat[start:end] + ("…" if end < len(flat) else "")
+    return flat[:2 * _SNIPPET_RADIUS] + ("…" if len(flat) > 2 * _SNIPPET_RADIUS else "")
+
+
+def _search_content(client, query: str, limit: int = 8,
+                    _allowed_ids: Optional[frozenset] = None) -> tuple[dict, bool]:
+    if not isinstance(query, str) or not query.strip():
+        return _failure(
+            "`query` must be a non-empty string.", None,
+            {"summary": "Missing query",
+             "options": ["Pass the distinctive words to look for, e.g. a record ID "
+                         "or a project name"]},
+            "INVALID_INPUT",
+        )
+    try:
+        limit = min(max(int(limit), 1), 20)
+    except (TypeError, ValueError):
+        return _failure("limit must be a number", None,
+                        {"summary": "Invalid limit",
+                         "options": ["Pass an integer limit between 1 and 20"]},
+                        "INVALID_INPUT")
+    found = client.search_pages(query.strip(), limit=limit, doc_ids=_allowed_ids)
+    hits = found.get("results") or []
+    match = found.get("match") or "no match"
+    results = [{"document": hit["name"], "page": hit["page"],
+                "snippet": _snippet(hit.get("text", ""), query)} for hit in hits]
+
+    if not results:
+        return _success(
+            {"results": [], "match": match},
+            {"summary": "No page matches this query",
+             "options": [
+                 "Nothing in the selected documents contains these words. This is a "
+                 "keyword match, not semantic search — a page phrased differently "
+                 "from the query can be missed.",
+                 "Retry with different distinctive words (an ID, a name, a different "
+                 "spelling), or fewer words",
+                 "Use browse_documents(query=...) to find documents by project or "
+                 "topic instead",
+             ]},
+        )
+    options = [
+        "Snippets are leads, not evidence: read the best pages with "
+        "get_page_content(doc_name, pages) before answering. Copy `document` "
+        "verbatim as doc_name.",
+        "Several documents can look alike (the same document type for different "
+        "projects): check each result's document name against the project or "
+        "entity the user asked about before using it.",
+    ]
+    if match == "any term":
+        options.insert(0, "No page contained ALL of the query's words, so these pages "
+                          "match ANY of them — broader and noisier. Check each one, or "
+                          "retry with fewer, more distinctive words.")
+    return _success({"results": results, "match": match},
+                    {"summary": f"{len(results)} matching page(s) ({match})",
+                     "options": options})
 
 
 def _get_document(client, doc_name: str, folder_id: Optional[str] = None,
@@ -1206,6 +1327,7 @@ def _remove_document(client, doc_names: list[str],
 
 _IMPLEMENTATIONS: dict[str, Callable[..., tuple[dict, bool]]] = {
     "browse_documents": _browse_documents,
+    "search_content": _search_content,
     "get_document": _get_document,
     "get_document_structure": _get_document_structure,
     "get_page_content": _get_page_content,
@@ -1297,7 +1419,11 @@ def _tool_docstring(description: str, properties: dict[str, Any]) -> str:
 
 
 _LOCAL_HIDDEN_PARAMS: dict[str, tuple[str, ...]] = {
-    "browse_documents": ("folder_id", "recursive", "sort", "query"),
+    # `query` is deliberately NOT hidden: it is the keyword search over name/description/section
+    # titles (postgres_store.py::search_metas). It used to be hidden here, which left the model
+    # able only to page through the whole library newest-first -- measured at 1,011 documents, a
+    # question whose document was findable by name still cost 24 listing calls without it.
+    "browse_documents": ("folder_id", "recursive", "sort"),
     "get_document": ("folder_id",),
     "get_document_structure": ("folder_id",),
     "get_page_content": ("folder_id",),
@@ -1312,13 +1438,16 @@ _LOCAL_DOC_NAME_DESCRIPTION = (
 
 _LOCAL_DESCRIPTIONS: dict[str, str] = {
     "browse_documents": (
-        "Primary document retrieval tool — first choice for any "
-        "document-related question. Lists your documents newest first with "
-        "names and descriptions; match them against the user's intent and "
-        "page through with `offset: next_offset` (limit up to 50) while "
-        "`has_more` is true. "
-        'Folder browsing and semantic ranking (sort="relevance") are not '
-        "supported in local mode yet — they work in cloud mode."
+        "Find documents by name, description and section titles. Pass "
+        "`query` — the distinctive words of the question, such as a project "
+        "or entity name, a record ID or a subject — to rank documents by "
+        "keyword match (lexical, not semantic: a document phrased very "
+        "differently may be missed; it matches all words first, then any "
+        "word). Without `query` it lists your documents newest first with "
+        "names and descriptions. Page through with `offset: next_offset` "
+        "(limit up to 50) while `has_more` is true. It does not search "
+        "inside pages — use search_content() for a fact that lives in a page. "
+        "Folder browsing is not supported in local mode."
     ),
     # Drop the sentence naming the cloud-only image tool, whatever its
     # wording; the contract-refresh test pins that something was removed.
@@ -1328,6 +1457,11 @@ _LOCAL_DESCRIPTIONS: dict[str, str] = {
 }
 
 _LOCAL_PARAM_DESCRIPTIONS: dict[tuple[str, str], str] = {
+    ("browse_documents", "query"): (
+        "Distinctive keywords to rank documents by: a project or entity name, "
+        "a record ID, a subject. Matches all words first, then any word. "
+        "Omit to list newest first."
+    ),
     ("get_document", "doc_name"): _LOCAL_DOC_NAME_DESCRIPTION,
     ("get_document_structure", "doc_name"): _LOCAL_DOC_NAME_DESCRIPTION,
     ("get_page_content", "doc_name"): _LOCAL_DOC_NAME_DESCRIPTION,
@@ -1623,12 +1757,14 @@ TOOL USAGE RULES:
 
 _DISCOVERY = """\
 DOCUMENT DISCOVERY:
-- browse_documents() — DEFAULT discovery tool, first choice for any document-related question. The bare call returns your documents newest first with names and descriptions; match them against the user's intent."""
+- search_content(query) — FIRST choice for any question about a specific fact: a record, drawing or RFI number, a name, a figure, a distinctive phrase. It searches the PAGES of all your documents and returns document names, page numbers and snippets. Put only the distinctive words in the query.
+- browse_documents(query) — finds documents by name, description and section titles. Use it to narrow to the right project, entity or topic when several documents look alike, and for "what do I have" questions (the bare call lists your documents newest first with names and descriptions)."""
 
 _DECISION = """\
 DECISION:
 - "What do I have / list / recent" → browse_documents()
-- ANY question that needs a document to answer (including "find THE paper about Y") → browse_documents(), then pick the documents whose name/description matches the question"""
+- A specific fact, identifier or figure → search_content(), then read the best-matching pages with get_page_content()
+- A topic, a project, or "find THE paper about Y" → browse_documents(query=...) with the distinctive words, then pick the documents whose name/description matches the question"""
 
 _AFTER_DISCOVERY = """\
 - If a question has NO possible connection to the documents (e.g., "capital of France"), do not answer it and do not use general knowledge: reply only that you can answer questions about the documents in this knowledge base.
@@ -1638,10 +1774,17 @@ _AFTER_DISCOVERY = """\
 _PERSISTENCE = """\
 PERSISTENCE (before concluding the target document is not in the library):
 This protocol applies both when results are empty AND when results are returned but none match the user's intent. Do NOT give up after a single discovery attempt. Follow these steps in order:
-1. browse_documents() and compare every returned name/description against the user's intent
-2. Rephrase the query with synonyms or alternative terms and browse again
-3. Page through the ENTIRE library with `limit: 50` and `offset: next_offset` until has_more is false — MANDATORY, must be completed before concluding "not found"
+1. search_content() for the distinctive words, and browse_documents(query=...) for the project or topic; compare every returned name/description/snippet against the user's intent
+2. Rephrase the query with synonyms, alternative spellings or different distinctive words and search again
+3. Small library (has_more is false after a page or two): page through the ENTIRE library with `limit: 50` and `offset: next_offset` until has_more is false — MANDATORY, must be completed before concluding "not found". Large library (many pages of has_more): repeat steps 1-2 with at least two further, differently-worded queries instead of paging through every document.
 Only after ALL steps have been tried may you conclude the document is not in the library. Do NOT fall back to general knowledge — if the user's question references their own documents, exhaust every discovery path first."""
+
+_SEARCH_DISCIPLINE = """\
+SEARCH DISCIPLINE (large libraries):
+- Run at least two differently-worded searches (different distinctive words) before concluding that something is absent or that a document does not exist.
+- Several documents can look alike — the same document type for different projects, towers or phases. Take the project or entity named in the question and check it against each candidate's name, description or page text before using it. Never mix facts from different projects.
+- If the same identifier or figure appears in more than one project's documents, say so and report each one with its project instead of picking one.
+- In the answer, name the document and project the facts came from."""
 
 # Added on top of the vendored instruction set (not part of upstream
 # PageIndex) after a real query mismatched a table row on a partial field
@@ -1667,6 +1810,7 @@ AGENT_INSTRUCTIONS = "\n\n".join([
     _DECISION,
     _AFTER_DISCOVERY,
     _PERSISTENCE,
+    _SEARCH_DISCIPLINE,
     _EVIDENCE_REASONING,
 ])
 
@@ -1736,12 +1880,38 @@ def _base_instructions(client, include_management: bool = False) -> str:
     return f"{base}\n\n{own}" if own else base
 
 
+#: Up to this many selected documents the targeting block lists each one's metadata (the managed
+#: chat's rendering). Above it, the block is a short constant-size notice instead: every selected
+#: document's metadata is ~130 tokens, re-sent on every model turn -- measured 65k tokens at 500
+#: documents and 132k at 1,011 (~10x the cost per question), and it overflows a 400k context near
+#: ~3,000. Scoping is unaffected: the tool layer enforces the allowlist (``_allowed_ids``)
+#: regardless of what the prompt says.
+TARGETING_FULL_BLOCK_MAX = 25
+
+
+def _compact_targeting_block(client, doc_ids: list) -> str:
+    wanted = {str(one_id) for one_id in doc_ids}
+    found = {str(doc.get("id")) for doc in _all_documents(client, stop_ids=wanted)}
+    missing = [one_id for one_id in doc_ids if str(one_id) not in found]
+    if missing:
+        raise RagEngineError(
+            "Documents not found or access denied: " + ", ".join(map(str, missing)))
+    return (
+        f"The user has specified {len(doc_ids)} documents.\n"
+        "Every tool is restricted to exactly these documents; no other document exists for "
+        "this conversation. They are not listed here because there are many: find the relevant "
+        "ones with search_content() (a specific fact or identifier) or browse_documents(query=...) "
+        "(a project, entity or topic), then read them with get_page_content()."
+    )
+
+
 def doc_targeting_block(client, doc_id) -> Optional[str]:
     """The doc_id targeting text, rendered as the cloud's managed chat
     renders its own: the documents' metadata rows and the directive to
-    work within them. Conversation content, never system prompt: the chat
-    lanes prepend it as the first user message, and document_context()
-    hands it to callers who own the conversation."""
+    work within them -- or, above ``TARGETING_FULL_BLOCK_MAX`` documents, a
+    constant-size notice (see that constant). Conversation content, never
+    system prompt: the chat lanes prepend it as the first user message,
+    and document_context() hands it to callers who own the conversation."""
     if doc_id is None:
         return None
     if not isinstance(doc_id, (str, list)):
@@ -1749,6 +1919,8 @@ def doc_targeting_block(client, doc_id) -> Optional[str]:
                                 "strings.")
     doc_ids = [doc_id] if isinstance(doc_id, str) else list(doc_id)
     _require_doc_selection(doc_ids)
+    if len(doc_ids) > TARGETING_FULL_BLOCK_MAX:
+        return _compact_targeting_block(client, doc_ids)
     details = []
     missing = []
     for one_id in doc_ids:

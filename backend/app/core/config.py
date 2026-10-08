@@ -96,6 +96,16 @@ class Settings(BaseSettings):
     model_embedding: str          # diagram vector embeddings (Qdrant)
     model_embedding_dimension: int  # must match model_embedding's real output size
 
+    # --- Chat agent behaviour (optional; see app/rag_service.py::chat_stream) ---
+    # Unset (the default) sends nothing: the model's own default reasoning depth applies, which is
+    # the accuracy-first choice -- "low" cut latency ~39% and cost ~31% on an 11-document library
+    # with no accuracy change, but was never measured at scale, so it is opt-in. One of
+    # minimal/low/medium/high; what a model accepts is its own.
+    rag_chat_reasoning_effort: str | None = None
+    # How many model turns one answer may take. The engine's own default (10) ran out on a
+    # 1,011-document library while the agent searched; accuracy-first, so more headroom.
+    rag_chat_max_turns: int = 16
+
 
     @property
     def is_prod(self) -> bool:

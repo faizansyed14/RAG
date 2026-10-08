@@ -87,7 +87,9 @@ def test_no_match_gives_fallback_guidance_not_empty_library_message(client):
 
     assert is_error is False
     assert data["documents"] == []
-    assert "sort=\"time\"" in " ".join(data["next_steps"]["options"])
+    options = " ".join(data["next_steps"]["options"])
+    assert "without `query`" in options          # `sort` is hidden from the model; don't point at it
+    assert "search_content()" in options          # in-page facts are found there, not here
 
 
 def test_plain_time_sort_is_unaffected(client):

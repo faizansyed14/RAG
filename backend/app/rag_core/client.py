@@ -1827,6 +1827,27 @@ class RagEngineClient:
             kwargs["doc_ids"] = doc_ids
         return self._api.list_documents(**kwargs)
 
+    def search_pages(self, query: str, limit: int = 8,
+                     doc_ids: Optional[Any] = None) -> dict[str, Any]:
+        """
+        Local-only full-text search over document *pages* (not just names).
+
+        Args:
+            query (str): Words to look for -- record IDs, names, subject terms.
+                Matches every word first; only if nothing matches does it
+                fall back to matching any word. Lexical, not semantic.
+            limit (int): Maximum pages to return (1-100).
+            doc_ids (optional): Scope the search to these document ids.
+
+        Returns:
+            dict: {'results': [{'doc_id', 'name', 'page', 'text'}], 'match':
+            'all terms' | 'any term' | 'no match'}.
+        """
+        kwargs: dict[str, Any] = {"limit": limit}
+        if doc_ids is not None:
+            kwargs["doc_ids"] = doc_ids
+        return self._api.search_pages(query, **kwargs)
+
     # ---------- AGENT INTEGRATION ----------
 
     def agent_tools(

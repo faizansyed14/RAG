@@ -90,8 +90,9 @@ These come straight from the vendored engine's source
   calls on top).
 
 **One chat query (RAG_CHAT_MODEL):**
-- The tree-search agent runs 1 to 10 turns before answering (`max_turns`
-  defaults to 10 in the vendored engine) -- each turn is roughly one model
+- The tree-search agent runs 1 to `RAG_CHAT_MAX_TURNS` turns (default 16;
+  the vendored engine's own default of 10 ran out on a 1,011-document
+  library) before answering -- each turn is roughly one model
   call, and the agent stops as soon as it has enough to answer, so a
   simple question is often 1-3 calls, not 10. There's no way to pin this
   to an exact number ahead of time; it's genuinely agentic.

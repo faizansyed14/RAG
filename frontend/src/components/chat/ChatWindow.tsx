@@ -67,9 +67,10 @@ export function ChatWindow({
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [selectedIds, setSelectedIds] = useState<string[] | null>(
-    initialSelectedIds?.length ? initialSelectedIds : null,
-  );
+  // null = no selection made (every ready document); [] = "Deselect all", an explicit choice of
+  // nothing that must never be quietly turned back into "all" (here or on the server).
+  const [selectedIds, setSelectedIds] = useState<string[] | null>(initialSelectedIds ?? null);
+  const nothingSelected = selectedIds !== null && selectedIds.length === 0;
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   // Client-only, after mount -- see MessageBubble's speechSupported for why.
   const [micSupported, setMicSupported] = useState(false);
@@ -99,7 +100,7 @@ export function ChatWindow({
 
   useEffect(() => {
     setMessages(initialMessages);
-    setSelectedIds(initialSelectedIds?.length ? initialSelectedIds : null);
+    setSelectedIds(initialSelectedIds ?? null);
     setInput("");
     setBusy(false);
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -121,7 +122,7 @@ export function ChatWindow({
 
   const send = async (override?: string) => {
     const query = (override ?? input).trim();
-    if (!query || busy || blocked) return;
+    if (!query || busy || blocked || nothingSelected) return;
     setNotice(null);
     if (listening) stopMic();
 
@@ -266,6 +267,11 @@ export function ChatWindow({
           {quotaState && (
             <CreditsMeter state={quotaState} blocked={blocked} secondsLeft={secondsLeft} resetsAt={resetsAt} />
           )}
+          {nothingSelected && (
+            <p role="status" className="mb-2 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-muted">
+              No documents are selected. Choose at least one source below to ask a question.
+            </p>
+          )}
           <div className="mb-2">
             <DocumentPicker
               documents={documents}
@@ -295,7 +301,13 @@ export function ChatWindow({
                   }
                 }}
                 disabled={blocked}
-                placeholder={blocked ? `Limit reached - resets in ${formatCountdown(secondsLeft)}` : "Ask a question about your documents"}
+                placeholder={
+                  blocked
+                    ? `Limit reached - resets in ${formatCountdown(secondsLeft)}`
+                    : nothingSelected
+                      ? "Select at least one document to ask a question"
+                      : "Ask a question about your documents"
+                }
                 aria-label="Message"
                 className="max-h-40 min-h-[44px] flex-1 resize-none bg-transparent px-2 py-2.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted"
               />
@@ -318,7 +330,8 @@ export function ChatWindow({
             <button
               type="button"
               onClick={() => send()}
-              disabled={busy || blocked || !input.trim()}
+              disabled={busy || blocked || nothingSelected || !input.trim()}
+              title={nothingSelected ? "Select at least one document first" : undefined}
               aria-label="Send"
               className="mb-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
             >

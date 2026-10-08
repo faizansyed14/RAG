@@ -112,7 +112,14 @@ def chat_stream(query: str, doc_ids: list[str], history: list[dict[str, str]] | 
     messages: str | list[dict[str, str]] = (
         [*history, {"role": "user", "content": query}] if history else query
     )
-    stream = get_client().chat(messages, doc_id=doc_ids, stream=True, citations=True)
+    settings = get_settings()
+    # Both optional knobs are only sent when set (empty env value == unset): by default the
+    # request is exactly what it was before -- the model's own reasoning depth, the engine's
+    # own turn limit raised only to the configured headroom.
+    kwargs: dict[str, Any] = {"max_turns": settings.rag_chat_max_turns}
+    if settings.rag_chat_reasoning_effort:
+        kwargs["reasoning_effort"] = settings.rag_chat_reasoning_effort
+    stream = get_client().chat(messages, doc_id=doc_ids, stream=True, citations=True, **kwargs)
     yield from stream.events
 
 

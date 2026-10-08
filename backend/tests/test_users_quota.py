@@ -335,3 +335,47 @@ async def test_env_admin_cannot_be_edited_from_the_users_page(make_user, monkeyp
         # Nobody else can take (or be renamed to) the reserved name.
         taken = await client.post("/api/users", json={"username": target.username.upper(), "password": "some-long-password"})
         assert taken.status_code == 409
+
+
+# --------------------------------------------------------------------------- selection scope
+
+
+async def test_chat_with_nothing_selected_is_rejected_not_widened_to_every_document(
+    make_user, indexed_document, monkeypatch
+):
+    """"Deselect all" sends document_ids=[]. An empty list used to be falsy server-side, so the
+    filter was skipped and the chat searched the WHOLE library. It must be refused instead --
+    before the engine runs and before any credit is spent."""
+    user, headers, _ = await make_user(credit_limit=100)
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("the engine must not run when no document is selected")
+
+    monkeypatch.setattr("app.api.chat.stream_chat", must_not_run)
+    async with _client(headers) as client:
+        resp = await client.post("/api/chat", json={"query": "what does the report say?", "document_ids": []})
+
+    assert resp.status_code == 400
+    assert "Select at least one document" in resp.json()["detail"]
+    assert (await _get_user(user.user_id)).credits_used == 0
+
+
+async def test_chat_with_no_selection_field_still_means_every_indexed_document(
+    make_user, indexed_document, monkeypatch
+):
+    """The other half of the distinction: omitting document_ids (null) is "no selection made" and
+    keeps meaning all indexed documents."""
+    _, headers, _ = await make_user(credit_limit=100)
+    seen: dict = {}
+
+    async def fake(query, rag_doc_ids, document_ids, history):
+        seen["ids"] = list(document_ids)
+        yield {"type": "answer", "delta": "ok"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr("app.api.chat.stream_chat", fake)
+    async with _client(headers) as client:
+        resp = await client.post("/api/chat", json={"query": "what does the report say?"})
+
+    assert resp.status_code == 200
+    assert indexed_document in seen["ids"]

@@ -112,3 +112,8 @@ TESTS
 -----
 docker compose --env-file .env.dev -f docker-compose.local.yml exec -T backend pytest -q
 docker compose --env-file .env.dev -f docker-compose.local.yml exec -T frontend npx tsc --noEmit
+
+RETRIEVAL RECALL CHECK (SQL only, no LLM calls, free) -- is the right page still in the top results as the library grows?
+run after big upload batches and before deploys; exits 1 if identifier recall@5 drops below 90%
+-----------------------------------------------------------------------------------------------
+docker compose --env-file .env.dev -f docker-compose.local.yml exec -T backend python -m scripts.eval_retrieval
